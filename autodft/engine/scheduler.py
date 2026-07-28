@@ -149,6 +149,23 @@ class SlurmScheduler(Scheduler):
 
     # -- status ------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_state(raw: str) -> str:
+        """Reduce a raw ``sacct`` State field to a bare SLURM state name.
+
+        ``sacct`` reports a job cancelled by a user as ``"CANCELLED by 12345"``,
+        and when the State column is width-truncated that arrives as the single
+        token ``"CANCELLED+"`` (the ``+`` marks truncation). Neither form equals
+        the bare ``"CANCELLED"`` the state sets are keyed on, so an un-normalized
+        value lands in *neither* TRANSIENT_SLURM_STATES nor TERMINAL_SLURM_STATES:
+        the job is then never re-polled *and* never judged, wedging its task in
+        ``pending`` forever. Take the first word and drop a trailing ``+`` so
+        every cancelled-job spelling collapses to ``"CANCELLED"``.
+        """
+        if not raw:
+            return raw
+        return raw.split()[0].rstrip("+")
+
     def get_status(self, job_id: str) -> str:
         """Query ``sacct`` for the state of *job_id*.
 
@@ -166,7 +183,7 @@ class SlurmScheduler(Scheduler):
             for line in result.stdout.strip().splitlines():
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == str(job_id):
-                    state = parts[1]
+                    state = self._normalize_state(parts[1])
                     logger.debug("SLURM job %s status: %s", job_id, state)
                     return state
             logger.warning("Job ID %s not found in sacct output", job_id)
@@ -213,7 +230,7 @@ class SlurmScheduler(Scheduler):
                 # Steps appear as "12345.batch" / "12345.0"; keep the parent.
                 job_id = parts[0].split(".")[0]
                 if job_id in chunk and job_id not in out:
-                    out[job_id] = parts[1]
+                    out[job_id] = self._normalize_state(parts[1])
 
         missing = [j for j in job_ids if str(j) not in out]
         if missing:

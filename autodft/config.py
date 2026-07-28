@@ -105,7 +105,7 @@ class PipelineConfig:
     # judged tasks failed, new job creation and submission stop until an
     # operator resets it from the dashboard.
     failure_breaker_enabled: bool = True
-    failure_breaker_ratio: float = 0.25
+    failure_breaker_ratio: float = 0.9
     failure_breaker_window: int = 100
     failure_breaker_min_samples: int = 20
     # Backstop on sbatch calls in one tick. 0 (the default) disables it:
@@ -166,6 +166,18 @@ class OrcaConfig:
     # Per-job temp directory parent. "" disables the TMP_DIR copy-out
     # pattern and runs ORCA directly inside the job_path.
     tmp_dir: str = "/tmp"
+    # Whether to copy the SCF wavefunction (``*.gbw``) back from the scratch
+    # dir to the shared job directory. Off by default: nothing in the
+    # pipeline reads it and there is no restart path, so on a large campaign
+    # it is pure dead weight on the shared filesystem (~26% of it here).
+    # Turn on only if you want the .gbw for manual restarts / re-analysis.
+    keep_wavefunction: bool = False
+    # Whether to copy the SCF electron density scratch files
+    # (``*.densities``/``*.densitiesinfo``/``*.cube``) back. Off by default:
+    # these are the single largest consumer of shared disk (~68% here) and
+    # are never read by the pipeline. Turn on only if you need to re-plot
+    # densities (which also needs keep_wavefunction).
+    keep_densities: bool = False
 
 
 @dataclass

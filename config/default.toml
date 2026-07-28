@@ -58,6 +58,14 @@ path       = "orca"
 extra_args = ""
 # nbo_exe  = "/path/to/nbo7.i8.exe"
 tmp_dir    = "/tmp"
+# Copy the SCF wavefunction (*.gbw) and electron-density scratch
+# (*.densities/*.densitiesinfo/*.cube) back from tmp_dir to the shared job
+# dir. Both off by default: nothing in the pipeline reads them and there is
+# no restart path, so on a large campaign they dominate shared-disk usage
+# (~26% and ~68% respectively). Turn on only if you need them for manual
+# restarts / re-plotting densities.
+keep_wavefunction = false
+keep_densities    = false
 
 [api]
 enabled = true

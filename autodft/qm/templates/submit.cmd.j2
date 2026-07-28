@@ -37,9 +37,9 @@ ORCA_EXIT=$?
 {% if tmp_dir %}
 # Copy results back to the shared job directory
 cp *.out *.txt *.xyz "$WORK_DIR"/ 2>/dev/null || true
-cp *.gbw                                "$WORK_DIR"/ 2>/dev/null || true
-cp *.densities *.densitiesinfo *.cube   "$WORK_DIR"/ 2>/dev/null || true
-cp input.finalensemble.xyz              "$WORK_DIR"/ 2>/dev/null || true
+{% if keep_wavefunction %}cp *.gbw                                "$WORK_DIR"/ 2>/dev/null || true
+{% endif %}{% if keep_densities %}cp *.densities *.densitiesinfo *.cube   "$WORK_DIR"/ 2>/dev/null || true
+{% endif %}cp input.finalensemble.xyz              "$WORK_DIR"/ 2>/dev/null || true
 
 cd /
 rm -rf "$TMP_DIR"

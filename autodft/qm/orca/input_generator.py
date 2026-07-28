@@ -89,6 +89,8 @@ def generate_submit_script(
     orca_extra_args: str = "",
     nbo_exe: str | None = None,
     tmp_dir: str = "/tmp",
+    keep_wavefunction: bool = False,
+    keep_densities: bool = False,
 ) -> Path:
     """Render ``submit.cmd.j2`` and write ``submit.cmd`` into *job_path*.
 
@@ -110,6 +112,9 @@ def generate_submit_script(
         tmp_dir: Parent directory for the per-job scratch directory.
                  Empty string disables the TMP_DIR copy-out pattern and
                  runs ORCA directly inside ``job_path``.
+        keep_wavefunction: Copy ``*.gbw`` back from scratch when True.
+        keep_densities: Copy ``*.densities``/``*.densitiesinfo``/``*.cube``
+                        back from scratch when True.
 
     Returns:
         Path to the written ``submit.cmd``.
@@ -133,6 +138,8 @@ def generate_submit_script(
         orca_extra_args=orca_extra_args,
         nbo_exe=nbo_exe,
         tmp_dir=tmp_dir,
+        keep_wavefunction=keep_wavefunction,
+        keep_densities=keep_densities,
     )
 
     submit_path = job_path / "submit.cmd"

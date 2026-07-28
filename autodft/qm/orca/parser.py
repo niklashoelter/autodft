@@ -143,6 +143,8 @@ class OrcaParser(QMEngine):
             orca_extra_args=self.orca.extra_args,
             nbo_exe=self.orca.nbo_exe,
             tmp_dir=self.orca.tmp_dir,
+            keep_wavefunction=self.orca.keep_wavefunction,
+            keep_densities=self.orca.keep_densities,
         )
 
     # ------------------------------------------------------------------

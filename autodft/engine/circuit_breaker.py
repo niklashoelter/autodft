@@ -119,6 +119,6 @@ def check(session: Session, settings) -> Optional[dict]:
         return existing
 
     ratio, failed, judged = recent_failure_ratio(session, cfg.failure_breaker_window)
-    if judged >= cfg.failure_breaker_min_samples and ratio > cfg.failure_breaker_ratio:
+    if judged >= cfg.failure_breaker_min_samples and ratio >= cfg.failure_breaker_ratio:
         return trip(settings.data_path, ratio, failed, judged)
     return None
