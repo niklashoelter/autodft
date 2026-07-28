@@ -107,7 +107,7 @@ class PipelineConfig:
     failure_breaker_enabled: bool = True
     failure_breaker_ratio: float = 0.9
     failure_breaker_window: int = 100
-    failure_breaker_min_samples: int = 20
+    failure_breaker_min_samples: int = 100
     # Backstop on sbatch calls in one tick. 0 (the default) disables it:
     # the real throttle is the priority cap on *waiting* jobs, and a count
     # limit here silently became the binding constraint instead -- a tick
