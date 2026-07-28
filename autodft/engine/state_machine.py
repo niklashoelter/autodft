@@ -155,6 +155,12 @@ def process_finished_jobs(session: Session, qm_engine: QMEngine) -> None:
         job.success = result.success
         if not result.success:
             failed_checks = [k for k, v in result.checks.items() if not v]
+            # A SLURM OOM kill usually truncates output.out before ORCA can
+            # print anything, so the only reliable memory signal is the SLURM
+            # state. Fold it into fail_reason so the retry escalates per-rank
+            # memory (the one failure mode where that is the right response).
+            if job.slurm_status == "OUT_OF_MEMORY":
+                failed_checks.append("OUT_OF_MEMORY")
             job.fail_reason = str(failed_checks)
         job.time_end = job.time_end or datetime.now(timezone.utc)
         session.add(job)

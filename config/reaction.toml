@@ -43,19 +43,24 @@ default_mem_per_core = 1000
 [pipeline.optimization]
 time_limit = "2-12:00:00"
 default_nprocs = 16
-default_mem_per_core = 1500
+# 1 GB/core baseline. Only a fallback -- a header's own %maxcore wins -- and
+# memory is only raised above this on an explicit memory failure.
+default_mem_per_core = 1000
 max_iter = 1000
 displacement = 0.1
 
 [pipeline.singlepoint]
 time_limit = "1-00:00:00"
 default_nprocs = 8
-default_mem_per_core = 2000
+default_mem_per_core = 1000
 
 [pipeline.retry]
 increased_time_limit = "4-00:00:00"
 increased_nprocs = 32
-increased_mem_per_core = 4000
+# Per-rank memory an OOM retry targets; hard-capped at MAX_MAXCORE_MB (2500)
+# in code, and only applied for an explicit memory failure. No non-memory
+# retry raises %maxcore, so 32-core/129 GB jobs can no longer happen.
+increased_mem_per_core = 2500
 
 [slurm]
 partition = "CPU"

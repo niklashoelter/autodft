@@ -55,7 +55,11 @@ class StorageConfig:
 class StageConfig:
     time_limit: str = "1-00:00:00"
     default_nprocs: int = 16
-    default_mem_per_core: int = 4000
+    # Per-core memory (%maxcore, MB) for a job whose header does not specify
+    # one. 1 GB/core is the house default; headers that need more (large
+    # basis singlepoints) set their own %maxcore. Memory is only raised above
+    # this on an *explicit* memory failure, and never past MAX_MAXCORE_MB.
+    default_mem_per_core: int = 1000
     max_iter: int = 1000
     displacement: float = 0.1
 
@@ -64,19 +68,22 @@ class StageConfig:
 class RetryConfig:
     increased_time_limit: str = "4-00:00:00"
     increased_nprocs: int = 32
-    increased_mem_per_core: int = 4000
+    # Per-core memory (%maxcore, MB) an escalated retry targets -- but ONLY
+    # for an explicit memory failure (SLURM OUT_OF_MEMORY or an ORCA
+    # out-of-memory message), and clamped to MAX_MAXCORE_MB. A retry for any
+    # other failure (timeout, SCF, convergence) gets more cores and time but
+    # keeps the header's own %maxcore. Capped at 2500 so a whole campaign of
+    # retries can never blow up to the old 32 x 4050 = 126 GB per job.
+    increased_mem_per_core: int = 2500
     # Ceiling on the SLURM --mem of an escalated job, in MB. 0 disables it.
     #
-    # SET THIS to the memory of the largest node in your partition. The
-    # defaults above multiply out to 32 * (4000 + 50) = 126 GB per job; if no
-    # node has that much the job sits PENDING forever with ReqNodeNotAvail,
-    # and because the queue-length throttle counts pending jobs, a pile of
-    # them stalls entrypoint expansion for the whole campaign.
-    #
-    # When the ceiling is hit the *rank count* is reduced to fit, never the
-    # per-rank %maxcore -- lowering that would starve a job that died
-    # needing more memory per rank. Defaults to 0 so that enabling it is a
-    # deliberate choice made against real hardware.
+    # SET THIS to the memory of the largest node in your partition. If a job's
+    # allocation exceeds it the *rank count* is reduced to fit, never the
+    # per-rank %maxcore (lowering that would starve a job that died needing
+    # more memory per rank). Note %maxcore is separately hard-capped at
+    # MAX_MAXCORE_MB (2500), so per-rank memory is bounded regardless of this.
+    # Defaults to 0 so that enabling it is a deliberate choice made against
+    # real hardware.
     max_mem_per_job_mb: int = 0
 
 

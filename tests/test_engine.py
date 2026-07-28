@@ -783,52 +783,88 @@ class TestRetryStrategies:
         """%MaxCore / %PAL silently no-op'd while submit.cmd got more cores."""
         from autodft.qm.orca.retry import FailureInfo, IncreaseResources
 
-        strategy = IncreaseResources(nprocs=32, mem_per_core=4000)
+        strategy = IncreaseResources(nprocs=32)
         inp = "!M062X\n%MaxCore 1500\n%PAL NPROCS 8 END\n*xyzfile 0 1 input.xyz\n"
+        # A memory failure so %maxcore is actually rewritten (case-insensitively).
         failure = FailureInfo(
-            fail_reason="['Termination']", previous_job_path="", attempt=2,
-            charge=0, multiplicity=1,
+            fail_reason="['Termination', 'OUT_OF_MEMORY']", previous_job_path="",
+            attempt=2, charge=0, multiplicity=1,
         )
         new_input, _ = strategy.modify(inp, "", failure)
         assert "nprocs 32" in new_input.lower()
-        assert "4000" in new_input
+        assert "2500" in new_input  # raised to the ceiling, not left at 1500
 
-    def test_maxcore_is_never_lowered(self):
-        """Halving per-rank memory would re-kill a job that died needing more."""
-        from autodft.qm.orca.retry import FailureInfo, IncreaseResources
+    def test_maxcore_is_capped_at_the_ceiling(self):
+        """A header asking for more than MAX_MAXCORE_MB is clamped down to it --
+        the hard cap that stops retries ballooning to 129 GB jobs."""
+        from autodft.qm.orca.retry import FailureInfo, IncreaseResources, MAX_MAXCORE_MB
 
-        strategy = IncreaseResources(nprocs=32, mem_per_core=4000)
+        strategy = IncreaseResources(nprocs=32)
         inp = "!M062X\n%maxcore 8000\n%pal nprocs 8 end\n"
         submit = "#SBATCH --ntasks-per-node=8\n#SBATCH --mem=64400\n#SBATCH --time=1-00:00:00\n"
+        failure = FailureInfo(
+            fail_reason="['Termination', 'OUT_OF_MEMORY']", previous_job_path="",
+            attempt=2, charge=0, multiplicity=1,
+        )
+        new_input, new_submit = strategy.modify(inp, submit, failure)
+        assert f"%maxcore {MAX_MAXCORE_MB}" in new_input
+        assert "8000" not in new_input
+        assert f"--mem={32 * (MAX_MAXCORE_MB + 50)}" in new_submit
+
+    def test_non_memory_failure_keeps_maxcore(self):
+        """A timeout / SCF failure gets more cores and time, NOT more memory --
+        throwing memory at a non-memory failure just re-ran the same job big."""
+        from autodft.qm.orca.retry import FailureInfo, IncreaseResources
+
+        strategy = IncreaseResources(nprocs=32)
+        inp = "!M062X\n%maxcore 1000\n%pal nprocs 8 end\n"
+        submit = "#SBATCH --ntasks-per-node=8\n#SBATCH --mem=8400\n#SBATCH --time=1-00:00:00\n"
         failure = FailureInfo(
             fail_reason="['Termination']", previous_job_path="", attempt=2,
             charge=0, multiplicity=1,
         )
         new_input, new_submit = strategy.modify(inp, submit, failure)
-        assert "%maxcore 8000" in new_input
-        # With no memory ceiling configured the allocation follows the kept
-        # %maxcore, not the retry default.
-        assert f"--mem={32 * (8000 + 50)}" in new_submit
+        assert "%maxcore 1000" in new_input       # per-rank memory untouched
+        assert "nprocs 32" in new_input           # cores still escalate
+        assert f"--mem={32 * (1000 + 50)}" in new_submit
 
-    def test_memory_ceiling_reduces_ranks_not_per_rank_memory(self):
-        """32 ranks x 4050 MB is 126 GB; if no node has that the job sits
-        PENDING forever and, via the queue-length throttle, stalls the
-        campaign. Clamping --mem alone would instead let ORCA allocate more
-        per rank than SLURM granted."""
+    def test_orca_memory_message_triggers_escalation(self, tmp_path):
+        """An ORCA out-of-memory message (no SLURM OOM state) still counts as
+        a memory failure and raises %maxcore."""
         from autodft.qm.orca.retry import FailureInfo, IncreaseResources
 
-        strategy = IncreaseResources(nprocs=32, mem_per_core=4000, max_mem_per_job_mb=64000)
+        (tmp_path / "output.out").write_text(
+            "ORCA aborting: insufficient memory to allocate the integrals\n",
+            encoding="utf-8",
+        )
+        strategy = IncreaseResources(nprocs=32)
+        inp = "!M062X\n%maxcore 1000\n%pal nprocs 8 end\n"
+        failure = FailureInfo(
+            fail_reason="['Termination']", previous_job_path=str(tmp_path),
+            attempt=2, charge=0, multiplicity=1,
+        )
+        new_input, _ = strategy.modify(inp, "", failure)
+        assert "%maxcore 2500" in new_input
+
+    def test_memory_ceiling_reduces_ranks_not_per_rank_memory(self):
+        """With %maxcore hard-capped at 2500, 32 ranks is 32 x 2550 = 81.6 GB;
+        a smaller max_mem ceiling reduces the *rank count* to fit rather than
+        the per-rank memory (clamping --mem alone would let ORCA allocate more
+        per rank than SLURM granted)."""
+        from autodft.qm.orca.retry import FailureInfo, IncreaseResources
+
+        strategy = IncreaseResources(nprocs=32, max_mem_per_job_mb=64000)
         inp = "!M062X\n%maxcore 1500\n%pal nprocs 8 end\n"
         submit = "#SBATCH --ntasks-per-node=8\n#SBATCH --mem=12400\n#SBATCH --time=1-00:00:00\n"
         failure = FailureInfo(
-            fail_reason="['Termination']", previous_job_path="", attempt=2,
-            charge=0, multiplicity=1,
+            fail_reason="['Termination', 'OUT_OF_MEMORY']", previous_job_path="",
+            attempt=2, charge=0, multiplicity=1,
         )
         new_input, new_submit = strategy.modify(inp, submit, failure)
 
         ranks = int(re.search(r"nprocs (\d+)", new_input).group(1))
-        assert ranks == 64000 // 4050          # reduced to fit the ceiling
-        assert "%maxcore 4000" in new_input    # per-rank memory untouched
+        assert ranks == 64000 // (2500 + 50)   # reduced to fit the ceiling
+        assert "%maxcore 2500" in new_input    # per-rank memory at the cap
         assert f"--ntasks-per-node={ranks}" in new_submit
         assert int(re.search(r"--mem=(\d+)", new_submit).group(1)) <= 64000
 
@@ -836,14 +872,15 @@ class TestRetryStrategies:
         """Fitting the memory ceiling must not turn escalation into a downgrade."""
         from autodft.qm.orca.retry import FailureInfo, IncreaseResources
 
-        strategy = IncreaseResources(nprocs=32, mem_per_core=4000, max_mem_per_job_mb=8000)
+        strategy = IncreaseResources(nprocs=32, max_mem_per_job_mb=8000)
         inp = "!M062X\n%maxcore 16000\n%pal nprocs 12 end\n"
         failure = FailureInfo(
-            fail_reason="['Termination']", previous_job_path="", attempt=2,
-            charge=0, multiplicity=1,
+            fail_reason="['Termination', 'OUT_OF_MEMORY']", previous_job_path="",
+            attempt=2, charge=0, multiplicity=1,
         )
         new_input, _ = strategy.modify(inp, "", failure)
         assert "nprocs 12" in new_input
+        assert "%maxcore 2500" in new_input   # clamped down from 16000
 
     def test_tighten_convergence_is_not_a_noop_on_tightscf_headers(self):
         """Every shipped header contains TightSCF, and the old guard made the
@@ -1034,18 +1071,21 @@ class TestCircuitBreaker:
         from autodft.engine.circuit_breaker import check
 
         settings = _settings(tmp_path)
-        self._judged(session, sample_state, sample_header, failed=6, successful=24)  # 20%
+        # 89 of 100 failed -- just under the 90% trip threshold.
+        self._judged(session, sample_state, sample_header, failed=89, successful=11)
         assert check(session, settings) is None
 
     def test_above_threshold_trips_and_latches(self, session, sample_state, sample_header, tmp_path):
         from autodft.engine.circuit_breaker import check, read_state, reset
 
         settings = _settings(tmp_path)
-        self._judged(session, sample_state, sample_header, failed=12, successful=24)  # 33%
+        # 90 of the last 100 failed -- exactly the shipped 0.9 threshold, and
+        # the comparison is inclusive so this trips.
+        self._judged(session, sample_state, sample_header, failed=90, successful=10)
 
         tripped = check(session, settings)
         assert tripped is not None
-        assert tripped["failed"] == 12
+        assert tripped["failed"] == 90
 
         # Latches: once submission stops nothing new is judged, so the ratio
         # cannot recover on its own and must be cleared deliberately.
