@@ -26,6 +26,7 @@ __all__ = [
     "IncreaseMaxIter",
     "TightenConvergence",
     "PerturbImaginaryMode",
+    "RecoverSinglepointSCF",
     "apply_retry_strategies",
 ]
 
@@ -451,6 +452,103 @@ class PerturbImaginaryMode(RetryStrategy):
         return input_content, submit_content
 
 
+class RecoverSinglepointSCF(RetryStrategy):
+    """Recover a singlepoint whose SCF crashed or would not converge.
+
+    In production nearly every singlepoint failure was ORCA 6.1's LEANSCF
+    solver (the default here, used even when the data fits in memory): either
+    it aborts after a handful of iterations across all subtypes ("error
+    termination in LEANSCF"), or it runs ~1000 cycles on a diffuse anion
+    (``vert_red``) and gives up at TightSCF while the energy is already
+    converged to microhartree and only the density criterion is unmet.
+
+    IncreaseResources -- the only strategy that fired for singlepoints -- just
+    re-ran them identically. This one actually changes the SCF:
+
+      * always: bypass LEANSCF (``%scf UseLeanSCF false``), which sidesteps
+        the early-abort crashes; raise ``MaxIter``; and add a level shift to
+        break the near-degeneracy that stalls the anion SCFs.
+      * attempt >= 3: also relax ``TightSCF`` -> ``NormalSCF`` and add
+        ``SlowConv``, so a near-degenerate anion already converged to uEh is
+        accepted rather than failed on the density criterion alone.
+
+    Applies only to singlepoints; optimisations keep TightSCF (their geometry
+    and frequencies need it).
+    """
+
+    # Lower-cased output.out signatures of an SCF/solver failure.
+    _SCF_SIGNATURES: tuple[str, ...] = (
+        "error termination in leanscf",
+        "error termination in scf",
+        "scf not converged",
+        "scf convergence failed",
+        "the scf has diverged",
+        "the scf has not converged",
+        "not fully converged",
+    )
+
+    def _is_scf_failure(self, failure: FailureInfo) -> bool:
+        if "SCF Convergence" in (failure.fail_reason or ""):
+            return True
+        if not failure.previous_job_path:
+            return False
+        try:
+            out = (Path(failure.previous_job_path) / "output.out").read_text(
+                encoding="utf-8", errors="replace",
+            ).lower()
+        except OSError:
+            return False
+        return any(sig in out for sig in self._SCF_SIGNATURES)
+
+    def applies(self, failure: FailureInfo, task_type: str) -> bool:
+        return task_type.startswith("singlepoint") and self._is_scf_failure(failure)
+
+    def modify(
+        self,
+        input_content: str,
+        submit_content: str,
+        failure: FailureInfo,
+    ) -> tuple[str, str]:
+        # Idempotent: the retry builder replays strategies over every prior
+        # failure, so modify() can run more than once per rebuild. Our marker
+        # is the UseLeanSCF directive -- if it is already there, do nothing.
+        if re.search(r"UseLeanSCF", input_content, re.IGNORECASE):
+            return input_content, submit_content
+
+        relax = failure.attempt >= 3
+        shift = 0.3 if relax else 0.2
+        scf_block = (
+            "%scf\n"
+            "  UseLeanSCF false\n"
+            "  MaxIter 500\n"
+            f"  Shift Shift {shift} ErrOff 0.1 end\n"
+            "end\n"
+        )
+        logger.debug("RecoverSinglepointSCF: relax=%s shift=%.1f", relax, shift)
+
+        # Insert the %scf block just before the geometry (*xyz / *xyzfile);
+        # ORCA accepts % blocks in any order ahead of the coordinates.
+        if re.search(r"(?m)^\s*\*\s*xyz", input_content):
+            input_content = re.sub(
+                r"(?m)^(?=\s*\*\s*xyz)", scf_block, input_content, count=1,
+            )
+        else:
+            input_content = input_content.rstrip() + "\n" + scf_block
+
+        if relax:
+            # The energy is already at uEh; TightSCF's density criterion is the
+            # only thing failing. Relax it and damp harder.
+            input_content = re.sub(
+                r"\bTightSCF\b", "NormalSCF", input_content, flags=re.IGNORECASE,
+            )
+            if not re.search(r"\bSlowConv\b", input_content, re.IGNORECASE):
+                input_content = re.sub(
+                    r"(?m)^(!.*)$", r"\1 SlowConv", input_content, count=1,
+                )
+
+        return input_content, submit_content
+
+
 # ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
@@ -461,6 +559,7 @@ _DEFAULT_STRATEGIES: list[RetryStrategy] = [
     IncreaseMaxIter(),
     TightenConvergence(),
     PerturbImaginaryMode(),
+    RecoverSinglepointSCF(),
 ]
 
 
@@ -486,6 +585,7 @@ def build_strategies(settings=None) -> list[RetryStrategy]:
         IncreaseMaxIter(max_iter=opt_cfg.max_iter),
         TightenConvergence(),
         PerturbImaginaryMode(displacement=opt_cfg.displacement),
+        RecoverSinglepointSCF(),
     ]
 
 

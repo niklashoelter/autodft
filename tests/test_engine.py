@@ -908,6 +908,77 @@ class TestRetryStrategies:
         assert resources[0].nprocs == 64
         assert resources[0].mem_per_core == 7000
 
+    # -- RecoverSinglepointSCF ------------------------------------------
+
+    def test_scf_recovery_applies_only_to_failed_singlepoint_scf(self):
+        from autodft.qm.orca.retry import FailureInfo, RecoverSinglepointSCF
+
+        s = RecoverSinglepointSCF()
+        scf_fail = FailureInfo(fail_reason="['Termination', 'SCF Convergence']",
+                               previous_job_path="", attempt=2)
+        # Applies to any singlepoint variant with an SCF failure...
+        assert s.applies(scf_fail, "singlepoint_vert_red")
+        assert s.applies(scf_fail, "singlepoint")
+        # ...but not to optimisations (they need TightSCF), and not to a
+        # singlepoint that failed for a non-SCF reason.
+        assert not s.applies(scf_fail, "optimization")
+        assert not s.applies(
+            FailureInfo(fail_reason="['Imaginary Frequencies']", previous_job_path="", attempt=2),
+            "singlepoint",
+        )
+
+    def test_scf_recovery_bypasses_leanscf_and_shifts(self):
+        from autodft.qm.orca.retry import FailureInfo, RecoverSinglepointSCF
+
+        inp = "!M062X def2-TZVPD RIJCOSX TightSCF\n*xyzfile 0 -1 input.xyz\n"
+        failure = FailureInfo(fail_reason="['SCF Convergence']", previous_job_path="", attempt=2)
+        new_input, _ = RecoverSinglepointSCF().modify(inp, "", failure)
+        assert re.search(r"UseLeanSCF\s+false", new_input, re.IGNORECASE)
+        assert "Shift Shift 0.2" in new_input
+        assert "MaxIter 500" in new_input
+        assert "TightSCF" in new_input          # not relaxed on attempt 2
+        # The %scf block goes ahead of the geometry line.
+        assert new_input.index("%scf") < new_input.index("*xyzfile")
+
+    def test_scf_recovery_relaxes_tightscf_on_third_attempt(self):
+        from autodft.qm.orca.retry import FailureInfo, RecoverSinglepointSCF
+
+        inp = "!M062X def2-TZVPD RIJCOSX TightSCF\n*xyzfile 0 -1 input.xyz\n"
+        failure = FailureInfo(fail_reason="['SCF Convergence']", previous_job_path="", attempt=3)
+        new_input, _ = RecoverSinglepointSCF().modify(inp, "", failure)
+        assert "TightSCF" not in new_input
+        assert "NormalSCF" in new_input
+        assert re.search(r"\bSlowConv\b", new_input)
+        assert "Shift Shift 0.3" in new_input
+
+    def test_scf_recovery_is_idempotent(self):
+        from autodft.qm.orca.retry import FailureInfo, RecoverSinglepointSCF
+
+        inp = "!M062X def2-TZVPD RIJCOSX TightSCF\n*xyzfile 0 -1 input.xyz\n"
+        failure = FailureInfo(fail_reason="['SCF Convergence']", previous_job_path="", attempt=2)
+        s = RecoverSinglepointSCF()
+        once, _ = s.modify(inp, "", failure)
+        twice, _ = s.modify(once, "", failure)
+        assert once == twice
+        assert twice.lower().count("useleanscf") == 1
+
+    def test_scf_recovery_detects_leanscf_crash_from_output(self, tmp_path):
+        """A LEANSCF abort records only ['Termination'] in fail_reason, but the
+        output.out names the module -- the strategy must still fire."""
+        from autodft.qm.orca.retry import FailureInfo, RecoverSinglepointSCF
+
+        (tmp_path / "output.out").write_text(
+            "ORCA finished by error termination in LEANSCF\n .... aborting the run\n",
+            encoding="utf-8",
+        )
+        s = RecoverSinglepointSCF()
+        failure = FailureInfo(fail_reason="['Termination']",
+                              previous_job_path=str(tmp_path), attempt=2)
+        assert s.applies(failure, "singlepoint")
+        inp = "!M062X def2-TZVPD RIJCOSX TightSCF\n*xyzfile 0 1 input.xyz\n"
+        new_input, _ = s.modify(inp, "", failure)
+        assert re.search(r"UseLeanSCF\s+false", new_input, re.IGNORECASE)
+
 
 # ======================================================================
 # Regressions introduced by the 0.2.0 work itself
