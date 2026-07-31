@@ -414,8 +414,13 @@ class PipelineExtractor:
         """
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
-        total_copied = 0
 
+        # Collect the copy plan under a short-lived session, then copy with no
+        # session open. This runs on a background thread that shares the
+        # SQLite connection pool with the controller (see db.py); holding a
+        # pooled connection across minutes of NFS copies would starve the
+        # pipeline's own writes.
+        plan: list[tuple[Path, Path, int, str]] = []
         with get_session() as session:
             molecules = session.exec(
                 select(Molecule).where(Molecule.project_name == self.project_name)
@@ -427,24 +432,37 @@ class PipelineExtractor:
                 ).all()
 
                 for state in states:
-                    total_copied += self._export_state_files(
-                        session, mol, state, dest, all_conformers,
-                        additional_extensions,
+                    plan.extend(
+                        self._plan_state_files(session, mol, state, dest, all_conformers)
                     )
+
+        total_copied = 0
+        for source_job_path, dest_subdir, conf_index, task_type in plan:
+            total_copied += _copy_task_files(
+                source_job_path=source_job_path,
+                dest_dir=dest_subdir,
+                conf_index=conf_index,
+                task_type=task_type,
+                additional_extensions=additional_extensions,
+            )
 
         logger.info("Exported %d files to %s", total_copied, dest)
         return total_copied
 
-    def _export_state_files(
+    def _plan_state_files(
         self,
         session: Session,
         mol: Molecule,
         state: MoleculeState,
         dest: Path,
         all_conformers: bool,
-        additional_extensions: Optional[list[str]],
-    ) -> int:
-        """Export files for one state."""
+    ) -> list[tuple[Path, Path, int, str]]:
+        """Resolve which files to copy for one state.
+
+        Returns a list of ``(source_job_path, dest_subdir, conf_index,
+        task_type)`` -- everything the copy needs, gathered while the session
+        is open so the copy itself can run without one.
+        """
         # Get all successful tasks for this state
         tasks = session.exec(
             select(ComputationTask).where(
@@ -462,7 +480,7 @@ class PipelineExtractor:
             opt_tasks = [opt_tasks[0]]
 
         opt_id_to_conf = {t.id: i + 1 for i, t in enumerate(opt_tasks)}
-        copied = 0
+        plan: list[tuple[Path, Path, int, str]] = []
 
         for task in tasks:
             # Determine conformer index
@@ -480,15 +498,11 @@ class PipelineExtractor:
             if job_path is None:
                 continue
 
-            copied += _copy_task_files(
-                source_job_path=job_path,
-                dest_dir=dest / str(mol.id) / state.description,
-                conf_index=conf_idx,
-                task_type=task.task_type.value,
-                additional_extensions=additional_extensions,
+            plan.append(
+                (job_path, dest / str(mol.id) / state.description, conf_idx, task.task_type.value)
             )
 
-        return copied
+        return plan
 
     # ------------------------------------------------------------------
     # Archive: filtered export + comp_data wipe + DB delete

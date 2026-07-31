@@ -20,6 +20,30 @@ class TaskStatus(str, Enum):
     failed = "failed"
 
 
+class ProjectJobKind(str, Enum):
+    """The long-running, user-triggered project operations that run as a
+    durable background job rather than inside the HTTP request."""
+
+    archive = "archive"
+    export_csv = "export_csv"
+    export_json = "export_json"
+    export_files = "export_files"
+    export_xlsx = "export_xlsx"
+
+
+class ProjectJobStatus(str, Enum):
+    """Lifecycle of a :class:`~autodft.models.project_job.ProjectJob`.
+
+    There is no ``pending``: the worker thread is spawned the moment the row
+    is written, so a job is ``running`` from creation. A row still ``running``
+    at controller startup was orphaned by a restart and is reconciled to
+    ``failed`` (see ``project_jobs.reconcile_orphaned_jobs``)."""
+
+    running = "running"
+    successful = "successful"
+    failed = "failed"
+
+
 class SlurmStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"

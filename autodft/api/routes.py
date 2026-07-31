@@ -36,6 +36,7 @@ from autodft.models import (
     ComputationTask,
     Molecule,
     MoleculeState,
+    ProjectJobKind,
     TaskStatus,
     TaskType,
 )
@@ -798,33 +799,47 @@ def api_project_state_analysis(
     return analyze_project(name)
 
 
-@router.get("/api/projects/{name}/state-analysis/export")
+@router.post("/api/projects/{name}/state-analysis/export")
 def api_project_state_analysis_export(
     name: str, identity: Identity = Depends(current_identity),
 ):
-    """Stream the state-analysis as a multi-sheet XLSX.
+    """Start building the state-analysis XLSX as a background job.
 
-    Sheets: Summary, Lowest Energy, RMSD Matched, Conformers.
-    Energies in Hartree (Eh) so users can convert downstream as needed;
-    redox potentials in V vs SCE.
+    Sheets: Summary, Lowest Energy, RMSD Matched, Conformers. Energies in
+    Hartree (Eh); redox potentials in V vs SCE. Re-parsing every molecule's
+    ORCA outputs takes seconds-to-minutes on a large project, so it runs off
+    the request like the other exports: returns **202** with the job, then
+    poll ``GET /api/projects/{name}/jobs`` and download via
+    ``GET /api/jobs/{id}/download``. Works on archived projects too (the
+    workbook is rebuilt from the frozen archive CSV).
     """
     bad = _reject_bad_project(name)
     if bad is not None:
         return bad
     with get_session() as session:
         name = resolve_project(session, identity, name)
-    from fastapi.responses import Response
+    from autodft.api import project_jobs
 
-    from autodft.analysis.state_analysis import analyze_project, build_xlsx_bytes
-
-    payload = analyze_project(name)
-    data = build_xlsx_bytes(payload)
-    filename = f"{name}_state_analysis.xlsx"
-    return Response(
-        content=data,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    try:
+        settings = get_active_settings()
+        with get_session() as session:
+            project_jobs.assert_no_active_job(session, name)
+        job = project_jobs.start_job(
+            owner_id=identity.user_id,
+            qualified_name=name,
+            kind=ProjectJobKind.export_xlsx,
+            params={},
+            settings=settings,
+        )
+        return JSONResponse(status_code=202, content={"project": name, "job": job})
+    except project_jobs.JobInProgress as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Could not start XLSX export for project %r", name)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"XLSX export failed to start: {type(exc).__name__}: {exc}"},
+        )
 
 
 def _status_of(task: Optional[ComputationTask]) -> Optional[str]:
@@ -868,26 +883,29 @@ def _project_is_archived(session, name: str) -> Optional[bool]:
 def api_project_archive(
     name: str, body: ArchiveRequest, identity: Identity = Depends(current_identity),
 ):
-    """Destructive archive of one project.
+    """Start a destructive archive of one project as a background job.
 
     Writes the CSV summary + the user-selected files into
     ``<export_data>/<name>/`` (CSV at the root, raw files under
     ``raw/``), then deletes every ``<comp_data>/mol_<id>/`` belonging
     to the project and flips ``Molecule.archived = True`` on every row.
 
+    The work runs on a background thread so it survives the browser closing;
+    poll ``GET /api/projects/{name}/jobs`` for progress. Returns **202** with
+    the created job.
+
     Refuses with 4xx when:
     * the project is ``"default"`` (protected — never archivable)
-    * the project doesn't exist
-    * the project is already archived
-
-    Wraps any unexpected exception so the response is always JSON.
+    * the project doesn't exist (404)
+    * the project is already archived (409)
+    * the project already has a background job in flight (409)
     """
     bad = _reject_bad_project(name)
     if bad is not None:
         return bad
     with get_session() as session:
         name = resolve_project(session, identity, name)
-    from autodft.extraction.extractor import PipelineExtractor
+    from autodft.api import project_jobs
 
     if _is_protected(name):
         return JSONResponse(
@@ -897,32 +915,43 @@ def api_project_archive(
 
     try:
         settings = get_active_settings()
-        settings.ensure_directories()
 
         with get_session() as session:
             state = _project_is_archived(session, name)
-        if state is None:
-            return JSONResponse(status_code=404, content={"detail": f"Project {name!r} has no molecules"})
-        if state is True:
-            return JSONResponse(status_code=409, content={"detail": f"Project {name!r} is already archived."})
+            if state is None:
+                return JSONResponse(status_code=404, content={"detail": f"Project {name!r} has no molecules"})
+            if state is True:
+                return JSONResponse(status_code=409, content={"detail": f"Project {name!r} is already archived."})
+            project_jobs.assert_no_active_job(session, name)
 
-        extractor = PipelineExtractor(name)
-        summary = extractor.archive_project(
-            export_root=settings.export_data_path,
-            comp_root=settings.comp_data_path,
-            extensions=body.extensions,
-            all_conformers=body.all_conformers,
+        job = project_jobs.start_job(
+            owner_id=identity.user_id,
+            qualified_name=name,
+            kind=ProjectJobKind.archive,
+            params={"extensions": body.extensions, "all_conformers": body.all_conformers},
+            settings=settings,
         )
-        return {"project": name, "archived": True, **summary}
+        return JSONResponse(status_code=202, content={"project": name, "job": job})
+    except project_jobs.JobInProgress as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except Exception as exc:
-        logger = __import__("logging").getLogger(__name__)
-        logger.exception("Archive failed for project %r", name)
+        logging.getLogger(__name__).exception("Could not start archive for project %r", name)
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Archive failed: {type(exc).__name__}: {exc}"},
+            content={"detail": f"Archive failed to start: {type(exc).__name__}: {exc}"},
         )
+
+
+# Export format -> the background-job kind that produces it. `xlsx` is the
+# state-analysis workbook; the rest come off the PipelineExtractor.
+_EXPORT_KINDS = {
+    "csv": ProjectJobKind.export_csv,
+    "json": ProjectJobKind.export_json,
+    "files": ProjectJobKind.export_files,
+    "xlsx": ProjectJobKind.export_xlsx,
+}
 
 
 @router.post("/api/projects/{name}/export")
@@ -932,68 +961,135 @@ def api_project_export(
     all_conformers: bool = Query(False),
     identity: Identity = Depends(current_identity),
 ):
-    """Trigger an export for one project.
+    """Start an export for one project as a background job.
 
-    Writes into ``<export_data>/<name>/`` and returns the path. Format:
-    ``csv`` -> ``<name>.csv``; ``json`` -> ``<name>.json``;
-    ``files`` -> copies raw ORCA files into ``<name>/files/``.
+    Writes into ``<export_data>/<name>/``. Format: ``csv`` -> ``<name>.csv``;
+    ``json`` -> ``<name>.json``; ``files`` -> raw ORCA files under
+    ``<name>/files/``; ``xlsx`` -> the state-analysis workbook.
 
-    Archived projects cannot be re-exported (their source files are
-    gone) — returns 409. Wraps any unexpected exception so the response
-    body is always JSON.
+    The work runs on a background thread so it survives the browser closing;
+    poll ``GET /api/projects/{name}/jobs`` and download the result via
+    ``GET /api/jobs/{id}/download``. Returns **202** with the created job.
+
+    ``csv`` / ``json`` / ``files`` need the on-disk ORCA outputs, so an
+    archived project is refused (409); ``xlsx`` is built from the frozen
+    archive CSV and is allowed. A project with a job already in flight is
+    refused (409).
     """
     bad = _reject_bad_project(name)
     if bad is not None:
         return bad
     with get_session() as session:
         name = resolve_project(session, identity, name)
-    from autodft.extraction.extractor import PipelineExtractor
+    from autodft.api import project_jobs
 
-    if format not in {"csv", "json", "files"}:
+    kind = _EXPORT_KINDS.get(format)
+    if kind is None:
         return JSONResponse(status_code=400, content={"detail": f"Unknown format {format!r}"})
 
     try:
         settings = get_active_settings()
-        settings.ensure_directories()
 
         with get_session() as session:
             state = _project_is_archived(session, name)
-        if state is None:
-            return JSONResponse(status_code=404, content={"detail": f"Project {name!r} has no molecules"})
-        if state is True:
-            return JSONResponse(
-                status_code=409,
-                content={"detail": f"Project {name!r} is archived — source files are no longer on disk."},
-            )
+            if state is None:
+                return JSONResponse(status_code=404, content={"detail": f"Project {name!r} has no molecules"})
+            if state is True and kind is not ProjectJobKind.export_xlsx:
+                return JSONResponse(
+                    status_code=409,
+                    content={"detail": f"Project {name!r} is archived — source files are no longer on disk."},
+                )
+            project_jobs.assert_no_active_job(session, name)
 
-        from autodft.paths import project_file_stem, safe_subdirectory
-
-        # safe_subdirectory rather than a bare join: it nests the owner
-        # segment and keeps the containment check on both halves.
-        out_root = safe_subdirectory(settings.export_data_path, name)
-        out_root.mkdir(parents=True, exist_ok=True)
-        stem = project_file_stem(name)
-
-        extractor = PipelineExtractor(name)
-        if format == "csv":
-            target = out_root / f"{stem}.csv"
-            extractor.export_summary_csv(target, all_conformers=all_conformers)
-            return {"format": format, "path": str(target)}
-        if format == "json":
-            target = out_root / f"{stem}.json"
-            extractor.export_summary_json(target, all_conformers=all_conformers)
-            return {"format": format, "path": str(target)}
-        # files
-        target = out_root / "files"
-        count = extractor.export_calculation_files(target, all_conformers=all_conformers)
-        return {"format": format, "path": str(target), "files_copied": count}
+        job = project_jobs.start_job(
+            owner_id=identity.user_id,
+            qualified_name=name,
+            kind=kind,
+            params={"all_conformers": all_conformers},
+            settings=settings,
+        )
+        return JSONResponse(status_code=202, content={"project": name, "job": job})
+    except project_jobs.JobInProgress as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except Exception as exc:
-        logger = __import__("logging").getLogger(__name__)
-        logger.exception("Export failed for project %r (format=%r)", name, format)
+        logging.getLogger(__name__).exception("Could not start export for project %r (format=%r)", name, format)
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Export failed: {type(exc).__name__}: {exc}"},
+            content={"detail": f"Export failed to start: {type(exc).__name__}: {exc}"},
         )
+
+
+@router.get("/api/projects/{name}/jobs")
+def api_project_jobs(name: str, identity: Identity = Depends(current_identity)):
+    """Recent background jobs for one project, newest first.
+
+    ``active`` is the job currently running (or null). Used by the dashboard
+    to disable the project's controls and poll progress while one runs.
+    """
+    bad = _reject_bad_project(name)
+    if bad is not None:
+        return bad
+    from autodft.api import project_jobs
+
+    with get_session() as session:
+        name = resolve_project(session, identity, name)
+        jobs = [project_jobs.serialize(j) for j in project_jobs.list_jobs(session, name)]
+    active = next((j for j in jobs if j["status"] == "running"), None)
+    return {"project": name, "active": active, "jobs": jobs}
+
+
+@router.get("/api/jobs/{job_id}")
+def api_job_detail(job_id: int, identity: Identity = Depends(current_identity)):
+    """One background job, scoped to a caller who may see its project."""
+    from autodft.api import project_jobs
+
+    with get_session() as session:
+        job = project_jobs.get_job(session, job_id)
+        if job is None or not _may_see_project(session, identity, job.qualified_name):
+            return JSONResponse(status_code=404, content={"detail": f"Job {job_id} not found"})
+        return project_jobs.serialize(job)
+
+
+@router.get("/api/jobs/{job_id}/download")
+def api_job_download(job_id: int, identity: Identity = Depends(current_identity)):
+    """Stream the file a finished export produced.
+
+    Only for successful jobs whose result is a single downloadable file
+    (csv / json / xlsx). ``files`` exports and archives produce a directory
+    tree on the server and answer 400 here.
+    """
+    from fastapi.responses import FileResponse
+
+    from autodft.api import project_jobs
+
+    with get_session() as session:
+        job = project_jobs.get_job(session, job_id)
+        if job is None or not _may_see_project(session, identity, job.qualified_name):
+            return JSONResponse(status_code=404, content={"detail": f"Job {job_id} not found"})
+        result = project_jobs.serialize(job)["result"] or {}
+        status = job.status.value
+
+    if status != "successful":
+        return JSONResponse(status_code=409, content={"detail": f"Job {job_id} is {status}, not successful."})
+    if not result.get("downloadable") or not result.get("path"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "This job did not produce a single downloadable file."},
+        )
+    path = Path(result["path"])
+    if not path.is_file():
+        return JSONResponse(status_code=404, content={"detail": "The produced file is no longer on disk."})
+    return FileResponse(path, filename=path.name)
+
+
+def _may_see_project(session, identity: Identity, qualified_name: str) -> bool:
+    """Whether *identity* may read data for *qualified_name*."""
+    if identity.is_admin:
+        return True
+    from autodft import accounts
+
+    owner = accounts.owner_of(session, qualified_name)
+    return owner is not None and owner.id == identity.user_id
 
 
 @router.get("/api/entrypoints/failed")
@@ -1376,10 +1472,16 @@ def api_project_wipe(
         return bad
     with get_session() as session:
         name = resolve_project(session, identity, name)
-    from autodft.api import admin_ops
+    from autodft.api import admin_ops, project_jobs
 
     if body.confirm != name:
         return _confirmation_error(name, body.confirm)
+
+    with get_session() as session:
+        try:
+            project_jobs.assert_no_active_job(session, name)
+        except project_jobs.JobInProgress as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     settings = get_active_settings()
     try:
@@ -1768,10 +1870,24 @@ def api_reset_database(
     standard set is reseeded.
     """
     require_admin(identity)
-    from autodft.api import admin_ops
+    from autodft.api import admin_ops, project_jobs
 
     if body.confirm != admin_ops.RESET_CONFIRMATION:
         return _confirmation_error(admin_ops.RESET_CONFIRMATION, body.confirm)
+
+    # A reset empties every project, so refuse while any project has a
+    # background archive/export in flight.
+    with get_session() as session:
+        busy = project_jobs.active_job_project_names(session)
+    if busy:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": (
+                "A background archive/export job is running for "
+                + ", ".join(sorted(busy))
+                + ". Wait for it to finish before resetting the database."
+            )},
+        )
 
     settings = get_active_settings()
     try:
@@ -1850,8 +1966,14 @@ def api_submit(
             status_code=400, content={"detail": detail, "validation": check},
         )
 
+    from autodft.api import project_jobs
+
     with get_session() as session:
         project_name, author = _submission_owner(session, identity, body)
+        try:
+            project_jobs.assert_no_active_job(session, project_name)
+        except project_jobs.JobInProgress as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
         entry = _new_entrypoint(session, body, body.smiles, project_name, author)
         session.add(entry)
         session.commit()
@@ -1903,8 +2025,14 @@ def api_submit_batch(
     accepted: list[tuple[str, CalculationEntrypoint]] = []
     rejected: list[dict] = []
 
+    from autodft.api import project_jobs
+
     with get_session() as session:
         project_name, author = _submission_owner(session, identity, body)
+        try:
+            project_jobs.assert_no_active_job(session, project_name)
+        except project_jobs.JobInProgress as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
         for smiles in body.smiles_list:
             if len(smiles) > 512:
                 # Matches the bound on SubmitRequest.smiles: RDKit's parser

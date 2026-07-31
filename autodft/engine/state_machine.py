@@ -20,6 +20,7 @@ from autodft.engine.scheduler import Scheduler
 from autodft.models.enums import (
     TERMINAL_SLURM_STATES,
     TRANSIENT_SLURM_STATES,
+    ProjectJobStatus,
     SlurmStatus,
     TaskStatus,
     TaskType,
@@ -28,6 +29,7 @@ from autodft.models.geometry import MoleculeGeometry
 from autodft.models.header import ComputationHeader
 from autodft.models.job import ComputationJob
 from autodft.models.molecule import Molecule
+from autodft.models.project_job import ProjectJob
 from autodft.models.state import MoleculeState
 from autodft.models.task import ComputationTask
 from autodft.qm.base import QMEngine
@@ -340,6 +342,13 @@ def start_followup_tasks(session: Session, settings: Settings) -> None:
         )
     ).all()
 
+    # Leave a task's has_followups set while its project is paused, so the
+    # followups are created after the archive/export job finishes rather than
+    # lost. See paused_project_names.
+    paused = paused_project_names(session)
+    if paused:
+        tasks = [t for t in tasks if _task_project(session, t) not in paused]
+
     for task in tasks:
         state = session.get(MoleculeState, task.state_id)
         if state is None:
@@ -557,6 +566,11 @@ def create_retry_jobs(
         )
     ).all()
 
+    # Don't create retry jobs for a project being archived/exported.
+    paused = paused_project_names(session)
+    if paused:
+        pending_tasks = [t for t in pending_tasks if _task_project(session, t) not in paused]
+
     for processed, task in enumerate(pending_tasks):
         _commit_batch(session, processed)
         jobs = session.exec(
@@ -623,6 +637,12 @@ def start_new_tasks(
     # the very directory tree that had just been archived, then burned the
     # retry budget failing against it.
     tasks = [t for t in tasks if not _molecule_is_archived(session, t)]
+
+    # Don't start new jobs for a project being archived/exported: a job
+    # created here would recreate the comp_data tree the archive is deleting.
+    paused = paused_project_names(session)
+    if paused:
+        tasks = [t for t in tasks if _task_project(session, t) not in paused]
 
     base_path = settings.comp_data_path
 
@@ -734,6 +754,11 @@ def submit_pending_jobs(session: Session, scheduler: Scheduler, settings: Settin
         )
         .order_by(col(Molecule.priority).desc(), col(ComputationJob.id).asc())
     )
+    # Don't submit a paused project's jobs: an archive/export is in flight and
+    # a running calculation would race its file operations.
+    paused = paused_project_names(session)
+    if paused:
+        statement = statement.where(col(Molecule.project_name).notin_(sorted(paused)))
     # Backstop only, disabled by default: the priority cap above is the
     # real throttle. A count limit here used to bind first and cap the fill
     # rate at one limit-full per tick.
@@ -840,6 +865,34 @@ def _molecule_is_archived(session: Session, task: ComputationTask) -> bool:
         return False
     molecule = session.get(Molecule, state.molecule_id)
     return bool(molecule is not None and molecule.archived)
+
+
+def paused_project_names(session: Session) -> set[str]:
+    """Projects with a background archive/export job in flight.
+
+    While such a job runs, the controller must not advance that project's
+    tasks -- create followups, start or retry jobs, or submit them. A
+    destructive archive is deleting the project's comp_data tree and a running
+    calculation writing into it (or a new job recreating it) would race the
+    ``rmtree``. The set is normally empty, so the per-task filtering below is
+    skipped entirely in the common case.
+    """
+    return set(
+        session.exec(
+            select(ProjectJob.qualified_name).where(
+                ProjectJob.status == ProjectJobStatus.running
+            )
+        ).all()
+    )
+
+
+def _task_project(session: Session, task: ComputationTask) -> Optional[str]:
+    """The project name a task belongs to, via its state's molecule."""
+    state = session.get(MoleculeState, task.state_id)
+    if state is None:
+        return None
+    molecule = session.get(Molecule, state.molecule_id)
+    return molecule.project_name if molecule is not None else None
 
 
 def _create_job_for_task(

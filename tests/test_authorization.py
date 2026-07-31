@@ -59,6 +59,9 @@ SCOPED = {
     "/api/projects/{name}/state-analysis/export",
     "/api/projects/{name}/archive",
     "/api/projects/{name}/export",
+    "/api/projects/{name}/jobs",
+    "/api/jobs/{job_id}",
+    "/api/jobs/{job_id}/download",
     # Destructive, but scoped: a user may wipe their own work, and
     # someone else's project answers 404 exactly as a read does.
     "/api/projects/{name}/wipe",

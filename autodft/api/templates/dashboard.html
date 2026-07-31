@@ -3010,38 +3010,86 @@
             }
         }
 
+        // Archive and export now run as durable background jobs: the POST
+        // returns 202 with a job, the work continues server-side even if this
+        // page is closed, and we poll /jobs for the outcome.
+
+        async function startProjectJob(url, fetchOpts) {
+            // -> {ok:true, project, job} or {ok:false, status?, detail}
+            var resp;
+            try { resp = await fetch(url, fetchOpts); }
+            catch (err) { return { ok: false, detail: 'Network error: ' + err.message }; }
+            var data = await safeJson(resp);
+            if (data._err) {
+                return { ok: false, status: resp.status,
+                         detail: 'Server returned non-JSON: ' + data._err };
+            }
+            if (resp.status !== 202) {
+                return { ok: false, status: resp.status,
+                         detail: data.detail || JSON.stringify(data) };
+            }
+            return { ok: true, project: data.project, job: data.job };
+        }
+
+        async function pollProjectJob(name, jobId, cbs) {
+            // Polls until the job leaves `running`, then calls onSuccess/onError.
+            while (true) {
+                await new Promise(function (r) { setTimeout(r, 1500); });
+                var resp;
+                try { resp = await fetch('/api/projects/' + projectPath(name) + '/jobs'); }
+                catch (err) { cbs.onError('Network error while polling: ' + err.message); return; }
+                var data = await safeJson(resp);
+                if (!resp.ok || data._err) {
+                    cbs.onError('Error polling job (HTTP ' + resp.status + ')');
+                    return;
+                }
+                var job = (data.jobs || []).filter(function (j) { return j.id === jobId; })[0];
+                if (!job) { cbs.onError('Job #' + jobId + ' disappeared.'); return; }
+                if (job.status === 'running') { if (cbs.onRunning) cbs.onRunning(job); continue; }
+                if (job.status === 'successful') { cbs.onSuccess(job); return; }
+                cbs.onError(job.error || 'The job failed.');
+                return;
+            }
+        }
+
         async function exportProject(format) {
             if (!currentProject) return;
             var fb = document.getElementById('projectExportFeedback');
             var allConf = document.getElementById('exportAllConformers').checked;
-            fb.textContent = 'Exporting...';
+            fb.textContent = 'Starting ' + format + ' export…';
             fb.className = 'submit-feedback';
-            try {
-                var resp = await fetch(
-                    '/api/projects/' + projectPath(currentProject) +
-                    '/export?format=' + format + '&all_conformers=' + (allConf ? 'true' : 'false'),
-                    { method: 'POST' }
-                );
-                var data = await safeJson(resp);
-                if (data._err) {
-                    fb.textContent = 'Server returned non-JSON (HTTP ' + resp.status + '): ' +
-                                     data._err + ' — ' + (data._raw || '').slice(0, 200);
-                    fb.className = 'submit-feedback error';
-                    return;
-                }
-                if (resp.ok) {
-                    var detail = data.path;
-                    if (data.files_copied != null) detail += '  (' + data.files_copied + ' files)';
-                    fb.textContent = 'Exported: ' + detail;
-                    fb.className = 'submit-feedback success';
-                } else {
-                    fb.textContent = 'Error (HTTP ' + resp.status + '): ' + (data.detail || JSON.stringify(data));
-                    fb.className = 'submit-feedback error';
-                }
-            } catch (err) {
-                fb.textContent = 'Network error: ' + err.message;
+            var started = await startProjectJob(
+                '/api/projects/' + projectPath(currentProject) +
+                '/export?format=' + format + '&all_conformers=' + (allConf ? 'true' : 'false'),
+                { method: 'POST' }
+            );
+            if (!started.ok) {
+                fb.textContent = 'Error' + (started.status ? ' (HTTP ' + started.status + ')' : '') +
+                                 ': ' + started.detail;
                 fb.className = 'submit-feedback error';
+                return;
             }
+            await pollProjectJob(started.project, started.job.id, {
+                onRunning: function () {
+                    fb.textContent = 'Exporting ' + format + '… (job #' + started.job.id +
+                                     ' running — safe to close this page)';
+                    fb.className = 'submit-feedback';
+                },
+                onSuccess: function (job) {
+                    var r = job.result || {};
+                    var msg = 'Exported: ' + escHtml(r.path || '');
+                    if (r.files_copied != null) msg += ' (' + escHtml(r.files_copied) + ' files)';
+                    if (r.downloadable) {
+                        msg += ' — <a href="/api/jobs/' + job.id + '/download">download</a>';
+                    }
+                    fb.innerHTML = msg;
+                    fb.className = 'submit-feedback success';
+                },
+                onError: function (e) {
+                    fb.textContent = 'Failed: ' + e;
+                    fb.className = 'submit-feedback error';
+                },
+            });
         }
 
         // ── Project archive confirmation modal ──────────────────────────
@@ -3076,55 +3124,59 @@
                 fb.className = 'submit-feedback error';
                 return;
             }
-            fb.textContent = 'Archiving... (CSV → copy → delete → drop project)';
+            fb.textContent = 'Starting archive…';
             fb.className = 'submit-feedback';
 
             var btn = document.getElementById('archiveConfirmBtn');
             btn.disabled = true;
-            try {
-                var resp = await fetch(
-                    '/api/projects/' + projectPath(currentProject) + '/archive',
-                    {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            extensions: exts,
-                            all_conformers: document.getElementById('exportAllConformers').checked,
-                        }),
-                    }
-                );
-                var data = await safeJson(resp);
-                if (data._err) {
-                    fb.textContent = 'Server returned non-JSON (HTTP ' + resp.status + '): ' +
-                                     data._err + ' — ' + (data._raw || '').slice(0, 200);
-                    fb.className = 'submit-feedback error';
-                    btn.disabled = false;
-                    return;
+            var started = await startProjectJob(
+                '/api/projects/' + projectPath(currentProject) + '/archive',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        extensions: exts,
+                        all_conformers: document.getElementById('exportAllConformers').checked,
+                    }),
                 }
-                if (resp.ok) {
+            );
+            if (!started.ok) {
+                fb.textContent = 'Error' + (started.status ? ' (HTTP ' + started.status + ')' : '') +
+                                 ': ' + started.detail;
+                fb.className = 'submit-feedback error';
+                btn.disabled = false;
+                return;
+            }
+            // The button stays disabled until the background job finishes.
+            await pollProjectJob(started.project, started.job.id, {
+                onRunning: function () {
+                    fb.textContent = 'Archiving… (waiting for running jobs to finish, ' +
+                                     'then copy → delete). Safe to close this page.';
+                    fb.className = 'submit-feedback';
+                },
+                onSuccess: function (job) {
+                    var r = job.result || {};
                     fb.innerHTML =
-                        'Archived <strong>' + escHtml(data.project) + '</strong>: ' +
-                        escHtml(data.molecules) + ' molecules, ' +
-                        escHtml(data.files_copied) + ' files kept (' +
-                        escHtml(data.files_dropped) + ' dropped). ' +
-                        'CSV → <code>' + escHtml(data.csv_path) + '</code>.';
+                        'Archived <strong>' + escHtml(started.project) + '</strong>: ' +
+                        escHtml(r.molecules) + ' molecules, ' +
+                        escHtml(r.files_copied) + ' files kept (' +
+                        escHtml(r.files_dropped) + ' dropped). ' +
+                        'CSV → <code>' + escHtml(r.csv_path) + '</code>.';
                     fb.className = 'submit-feedback success';
-                    // Refresh project list — the project stays visible (marked
-                    // as archived) so the user can still browse its molecules.
+                    btn.disabled = false;
+                    // The project stays visible (marked archived) so the user
+                    // can still browse its molecules.
                     setTimeout(function () {
                         closeArchiveModal();
                         fetchProjects();
                     }, 1800);
-                } else {
-                    fb.textContent = 'Error (HTTP ' + resp.status + '): ' + (data.detail || JSON.stringify(data));
+                },
+                onError: function (e) {
+                    fb.textContent = 'Failed: ' + e;
                     fb.className = 'submit-feedback error';
-                }
-            } catch (err) {
-                fb.textContent = 'Network error: ' + err.message;
-                fb.className = 'submit-feedback error';
-            } finally {
-                btn.disabled = false;
-            }
+                    btn.disabled = false;
+                },
+            });
         }
 
         (function () {
@@ -3559,27 +3611,34 @@
                     exportBtn.disabled = true;
                     var origLabel = exportBtn.textContent;
                     exportBtn.textContent = 'Preparing…';
-                    try {
-                        var resp = await fetch('/api/projects/' + projectPath(name) + '/state-analysis/export');
-                        if (!resp.ok) {
-                            var text = await resp.text();
-                            throw new Error('HTTP ' + resp.status + ' — ' + text.slice(0, 200));
-                        }
-                        var blob = await resp.blob();
-                        var url = URL.createObjectURL(blob);
-                        var a = document.createElement('a');
-                        a.href = url;
-                        a.download = name + '_state_analysis.xlsx';
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        setTimeout(function () { URL.revokeObjectURL(url); }, 0);
-                    } catch (err) {
-                        alert('Export failed: ' + err.message);
-                    } finally {
+                    // The workbook is built by a background job (re-parsing every
+                    // molecule's outputs is slow on a big project); poll, then
+                    // download the produced file.
+                    var started = await startProjectJob(
+                        '/api/projects/' + projectPath(name) + '/state-analysis/export',
+                        { method: 'POST' }
+                    );
+                    if (!started.ok) {
+                        alert('Export failed: ' + started.detail);
                         exportBtn.disabled = false;
                         exportBtn.textContent = origLabel;
+                        return;
                     }
+                    await pollProjectJob(started.project, started.job.id, {
+                        onRunning: function () { exportBtn.textContent = 'Building…'; },
+                        onSuccess: function (job) {
+                            exportBtn.disabled = false;
+                            exportBtn.textContent = origLabel;
+                            // Content-Disposition on the download endpoint makes
+                            // this save the .xlsx rather than navigate to it.
+                            window.location = '/api/jobs/' + job.id + '/download';
+                        },
+                        onError: function (e) {
+                            alert('Export failed: ' + e);
+                            exportBtn.disabled = false;
+                            exportBtn.textContent = origLabel;
+                        },
+                    });
                 });
             }
         })();

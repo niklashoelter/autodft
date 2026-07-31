@@ -71,6 +71,22 @@ def client(tmp_path):
     reset_engine()
 
 
+def _run_export_job(c, headers, response):
+    """Wait for the background export the POST kicked off and return its result.
+
+    Exports now return 202 with a job; the file lands once the worker thread
+    finishes.
+    """
+    from autodft.api import project_jobs
+
+    assert response.status_code == 202, response.text
+    project_jobs.join_all(timeout=10)
+    job_id = response.json()["job"]["id"]
+    detail = c.get(f"/api/jobs/{job_id}", headers=headers).json()
+    assert detail["status"] == "successful", detail
+    return detail["result"]
+
+
 class TestExportRoute:
     @pytest.mark.parametrize("fmt,suffix", [("csv", ".csv"), ("json", ".json")])
     def test_the_file_lands_beside_the_project_not_below_it(
@@ -80,9 +96,9 @@ class TestExportRoute:
         response = c.post(
             f"/api/projects/owner:screening/export?format={fmt}", headers=headers,
         )
-        assert response.status_code == 200, response.text
+        result = _run_export_job(c, headers, response)
         expected = tmp_path / "export_data" / "owner" / "screening" / f"screening{suffix}"
-        assert response.json()["path"] == str(expected)
+        assert result["path"] == str(expected)
         # The parent must be the directory that was actually created.
         assert expected.parent.is_dir()
 
@@ -91,7 +107,7 @@ class TestExportRoute:
         response = c.post(
             "/api/projects/owner:screening/export?format=files", headers=headers,
         )
-        assert response.status_code == 200, response.text
-        assert response.json()["path"] == str(
+        result = _run_export_job(c, headers, response)
+        assert result["path"] == str(
             tmp_path / "export_data" / "owner" / "screening" / "files"
         )

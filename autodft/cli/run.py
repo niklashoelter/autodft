@@ -50,6 +50,12 @@ def run(
     from autodft.db import init_db
     init_db(settings)
 
+    # A project archive/export runs on a background thread in this process. A
+    # restart orphans any that were in flight; fail them (and unblock their
+    # projects) rather than leaving the rows wedged in `running` forever.
+    from autodft.api.project_jobs import reconcile_orphaned_jobs
+    reconcile_orphaned_jobs(settings)
+
     # Optionally start the FastAPI dashboard in a background thread
     if settings.api.enabled:
         _start_api_server(settings)
