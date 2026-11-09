@@ -194,7 +194,7 @@ def nmr_api(tmp_path):
 
 
 class TestArchiveWaitsForNmrReferences:
-    def test_refuses_while_the_reference_is_pending(self, nmr_api):
+    def test_the_job_fails_while_the_reference_is_pending(self, nmr_api):
         client, headers, tmp_path = nmr_api
         with get_session() as session:
             _glyoxal(session, tmp_path)
@@ -206,8 +206,14 @@ class TestArchiveWaitsForNmrReferences:
 
         r = client.post("/api/projects/nho:p/archive", headers=headers,
                         json={"confirm": "nho/p"})
-        assert r.status_code == 409, r.text
-        assert "C[Si](C)(C)C" in r.json()["detail"]
+        assert r.status_code == 202, r.text
+        project_jobs.join_all(timeout=10)
+        job = client.get(f"/api/jobs/{r.json()['job']['id']}", headers=headers).json()
+        assert job["status"] == "failed"
+        assert "C[Si](C)(C)C" in job["error"]
+        with get_session() as session:
+            assert not any(m.archived for m in session.exec(
+                select(Molecule).where(Molecule.project_name == "nho/p")).all())
 
     def test_202_once_the_reference_is_successful(self, nmr_api):
         client, headers, tmp_path = nmr_api

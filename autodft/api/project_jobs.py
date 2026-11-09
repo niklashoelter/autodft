@@ -432,12 +432,20 @@ def _execute(
         return {"format": "reactivity", "path": str(target), "json_path": str(data), "downloadable": True}
 
     if kind == ProjectJobKind.archive:
+        from autodft.analysis import spectroscopy
+
+        # Frozen NMR shifts are final; their reference must be in first.
+        waiting = spectroscopy.pending_nmr_references(qualified_name)
+        if waiting:
+            raise ValueError(
+                f"Project {qualified_name!r} has NMR molecules still waiting for their reference "
+                f"({', '.join(waiting)}); archive it once the references have finished."
+            )
+
         # Do not rmtree under a job still writing files or a read holding them open, nor
         # before a result is judged and exportable. The pause has stopped new jobs and reads.
         _wait_for_quiescence(qualified_name)
         fail_open_tasks(qualified_name)
-
-        from autodft.analysis import spectroscopy
 
         # The archive deletes the outputs the photophysics results are read from.
         frozen = spectroscopy.freeze(qualified_name, settings)

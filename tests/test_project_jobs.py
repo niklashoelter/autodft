@@ -783,6 +783,49 @@ class TestArchivedLeftovers:
             assert PipelineWorker._unsubmitted_job_count(session) == 2
 
 
+class TestPendingNmrReferences:
+    """The reference check reads every molecule's spectra, so it runs in the job, not the request."""
+
+    @pytest.fixture()
+    def pending(self, monkeypatch):
+        import threading
+
+        from autodft.analysis import spectroscopy
+
+        threads = []
+
+        def waiting(name):
+            threads.append(threading.current_thread().name)
+            return ["TMS"]
+
+        monkeypatch.setattr(spectroscopy, "pending_nmr_references", waiting)
+        return threads
+
+    def test_the_request_returns_before_the_check(self, client, pending):
+        c, headers, env = client
+        r = c.post("/api/projects/owner:screening/archive", json={"confirm": PROJECT}, headers=headers)
+        assert r.status_code == 202, r.text
+        project_jobs.join_all(timeout=10)
+        assert pending and all(t.startswith("autodft-projectjob-") for t in pending)
+
+    def test_a_pending_reference_fails_the_archive_before_it_touches_anything(self, env, pending):
+        from sqlmodel import select
+
+        with get_session() as session:
+            task_id = _make_task(session).id
+        job = project_jobs.start_job(owner_id=env["owner_id"], qualified_name=PROJECT,
+                                     kind=ProjectJobKind.archive, params={}, settings=env["settings"])
+        project_jobs.join_all(timeout=10)
+
+        with get_session() as session:
+            row = project_jobs.get_job(session, job["id"])
+            assert row.status == ProjectJobStatus.failed
+            assert "waiting for their reference (TMS)" in row.error
+            assert session.get(ComputationTask, task_id).status == TaskStatus.created
+            assert not any(m.archived for m in session.exec(
+                select(Molecule).where(Molecule.project_name == PROJECT)).all())
+
+
 @pytest.mark.parametrize("kind,ext", [(ProjectJobKind.export_csv, "csv"), (ProjectJobKind.export_json, "json")])
 def test_an_empty_export_reports_nothing_and_drops_the_stale_file(env, kind, ext):
     from autodft.paths import project_file_stem, safe_subdirectory

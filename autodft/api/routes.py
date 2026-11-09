@@ -1286,8 +1286,9 @@ def api_project_archive(
     * the project doesn't exist (404)
     * the project is already archived (409)
     * the project already has a background job in flight (409)
-    * an NMR molecule's reference is still pending (409) -- the frozen shift
-      would stay null forever
+
+    The job fails, touching nothing, while an NMR molecule's reference is
+    still pending -- the frozen shift would stay null forever.
     """
     bad = _reject_bad_project(name)
     if bad is not None:
@@ -1315,16 +1316,6 @@ def api_project_archive(
                 return JSONResponse(status_code=404, content={"detail": f"Project {name!r} has no molecules"})
             if state is True:
                 return JSONResponse(status_code=409, content={"detail": f"Project {name!r} is already archived."})
-
-        from autodft.analysis import spectroscopy
-
-        # Frozen NMR shifts are final; their reference must be in first.
-        waiting = spectroscopy.pending_nmr_references(name)
-        if waiting:
-            return JSONResponse(status_code=409, content={"detail": (
-                f"Project {name!r} has NMR molecules still waiting for their reference "
-                f"({', '.join(waiting)}); archive it once the references have finished."
-            )})
 
         job = project_jobs.start_job(
             owner_id=identity.user_id,
