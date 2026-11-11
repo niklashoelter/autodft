@@ -19,7 +19,7 @@ from sqlmodel import Session, col, select
 
 from autodft import categories
 from autodft.config import Settings
-from autodft.engine import circuit_breaker, nmr_references
+from autodft.engine import circuit_breaker, nmr_references, s0_seed
 from autodft.models.entrypoint import CalculationEntrypoint
 from autodft.models.geometry import MoleculeGeometry
 from autodft.models.header import ComputationHeader
@@ -259,10 +259,14 @@ def _process_entrypoint_body(
             defer=True, extra_metadata={**ESD_T1_METADATA, **t1_metadata, **esd},
         )
 
+    # seed_from_s0: no conformer search of their own; S0* seeds them (engine.s0_seed).
+    seeded = {"defer": True, "extra_metadata": {s0_seed.SEED_FROM_S0: True}} \
+        if metadata.get(s0_seed.SEED_FROM_S0) else {}
+
     if metadata.get("request_T1", False):
         _create_state(
             session, molecule, smiles, "T1", multiplicity + 2, charge,
-            metadata, header_ids, base_path, initial_xyz,
+            metadata, header_ids, base_path, initial_xyz, **seeded,
         )
 
     if metadata.get("request_ox", False):
@@ -270,7 +274,7 @@ def _process_entrypoint_body(
         ox_mult = calculate_altered_multiplicity(multiplicity, charge, ox_charge)
         _create_state(
             session, molecule, smiles, "ox", ox_mult, ox_charge,
-            metadata, header_ids, base_path, initial_xyz,
+            metadata, header_ids, base_path, initial_xyz, **seeded,
         )
 
     if metadata.get("request_red", False):
@@ -278,7 +282,7 @@ def _process_entrypoint_body(
         red_mult = calculate_altered_multiplicity(multiplicity, charge, red_charge)
         _create_state(
             session, molecule, smiles, "red", red_mult, red_charge,
-            metadata, header_ids, base_path, initial_xyz,
+            metadata, header_ids, base_path, initial_xyz, **seeded,
         )
 
     if s0 is not None:

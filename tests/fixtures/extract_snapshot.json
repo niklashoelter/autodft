@@ -1561,7 +1561,8 @@
           "index": 5,
           "isotropic": 22.614
         }
-      ]
+      ],
+      "efg": []
     },
     "singlepoint_soc": {
       "energy": -227.472098393826,

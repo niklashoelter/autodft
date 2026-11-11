@@ -230,6 +230,14 @@ def is_tight_optimization(task_type: str, options: dict) -> bool:
     )
 
 
+def nmr_trailer(options: Optional[dict]) -> str:
+    """The %eprnmr block an NMR job puts after its geometry: the As EFG when As is requested."""
+    if "As" not in (options or {}).get("nmr_nuclei", []):
+        return ""
+    # ORCA reads Nuclei only after the coordinates.
+    return "%eprnmr\n  Nuclei = all As {fgrad}\nend\n"
+
+
 def compose_header(
     task_type: str, header: str, options: Optional[dict] = None, multiplicity: int = 1,
 ) -> str:

@@ -126,6 +126,43 @@ def parse_shieldings(content: str) -> list[Shielding]:
     return rows
 
 
+# " Nucleus   1As: A  : Isotope=   75 I=  1.5 P= 91.6668 MHz/au**3"
+_EFG_NUCLEUS = re.compile(r"^\s*Nucleus\s+(\d+)\s*([A-Z][a-z]?)\s*:\s*A\s*:")
+_EFG_VTOT = re.compile(r"^\s*V\(Tot\)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)")
+_EFG_CQ = re.compile(r"^\s*e\*\*2qQ\s+=\s+(-?[\d.]+)\s+MHz")
+_EFG_ETA = re.compile(r"^\s*eta\s+=\s+(-?[\d.]+)")
+
+
+@dataclass(frozen=True)
+class Efg:
+    index: int  # 0-based ORCA atom index
+    element: str
+    vzz_au: float  # largest-magnitude principal component of the total EFG
+    cq_mhz: float  # quadrupole coupling constant e**2qQ/h
+    eta: float
+
+
+def parse_efg(content: str) -> list[Efg]:
+    """Electric field gradients from the %eprnmr ``fgrad`` output; the last per nucleus."""
+    found: dict[int, Efg] = {}
+    nucleus = vzz = cq = None
+    for line in content.splitlines():
+        match = _EFG_NUCLEUS.match(line)
+        if match:
+            nucleus, vzz, cq = (int(match.group(1)), match.group(2)), None, None
+            continue
+        if nucleus is None:
+            continue
+        if (match := _EFG_VTOT.match(line)):
+            vzz = float(match.group(3))
+        elif (match := _EFG_CQ.match(line)):
+            cq = float(match.group(1))
+        elif (match := _EFG_ETA.match(line)) and vzz is not None and cq is not None:
+            found[nucleus[0]] = Efg(nucleus[0], nucleus[1], vzz, cq, float(match.group(1)))
+            nucleus = None
+    return [found[i] for i in sorted(found)]
+
+
 _NPA_TITLE = "Summary of Natural Population Analysis:"
 # "    C  1    0.30354      1.99995     3.66683    0.02968     5.69646" -- the
 # open-shell total block adds a Natural Spin Density column at the end.

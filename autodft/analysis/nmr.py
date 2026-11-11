@@ -3,7 +3,8 @@
 delta = sigma_ref - sigma + delta_ref, where sigma_ref is the reference compound's
 mean shielding for that element at the same optimisation and singlepoint headers
 and NMR method, and delta_ref its experimental shift vs TMS in the calculation's
-solvent (see autodft.engine.nmr_references).
+solvent (see autodft.engine.nmr_references). Nuclei without a reference (As)
+keep their shielding and add their electric field gradient.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from autodft.extraction import results as stored
 from autodft.extraction.extractor import PipelineExtractor
 from autodft.models import ComputationHeader, ComputationTask, Molecule, MoleculeGeometry, MoleculeState, TaskStatus, TaskType
 from autodft.qm.orca.advanced import effective_header, stored_method_settings
-from autodft.qm.orca.spectra_parser import Shielding
+from autodft.qm.orca.spectra_parser import Efg, Shielding
 
 _OPEN = (TaskStatus.created, TaskStatus.pending)
 
@@ -137,7 +138,7 @@ def molecule_nmr(
     nuclei = categories.options(metadata).get("nmr_nuclei", list(categories.NMR_NUCLEI))
 
     items = []
-    results: dict[int, tuple[list[Shielding], Optional[tuple[frozenset[str], str]]]] = {}
+    results: dict[int, tuple[list[Shielding], Optional[tuple[frozenset[str], str]], list[Efg]]] = {}
     for conformer in pool:
         status = _status(session, extractor, conformer, results)
         items.append((conformer, status, {}))
@@ -157,9 +158,12 @@ def molecule_nmr(
     first = results[have[0].opt.id]
     elements = [s.element for s in first[0]]
     sigma = [0.0] * len(elements)
+    anisotropy = [0.0] * len(elements)
     for conformer, weight in zip(have, weights):
         for s in results[conformer.opt.id][0]:
             sigma[s.index] += weight * s.isotropic
+            anisotropy[s.index] += weight * s.anisotropy
+    efg = _weighted_efg([results[c.opt.id][2] for c in have], weights)
 
     classes = equivalence_classes(_geometry(session, have[0].opt.id))
     if classes is None or len(classes) != len(elements):
@@ -182,22 +186,29 @@ def molecule_nmr(
                 groups[classes[index]].append(index)
         if not groups:
             continue
-        ref = reference[element]
-        sigma_ref = ref["sigma_ppm"] if ref["status"] == "ok" else None
+        ref = reference.get(element)
+        sigma_ref = ref["sigma_ppm"] if ref is not None and ref["status"] == "ok" else None
         delta_ref, solvent = nmr_references.reference_shift(
             ref["compound"], element, sp_text,
-        )
+        ) if ref is not None else (0.0, None)
         signals = []
         for atoms in groups.values():
             mean = sum(sigma[i] for i in atoms) / len(atoms)
-            signals.append({
+            signal = {
                 "atoms": atoms, "count": len(atoms), "shielding_ppm": mean,
                 "shift_ppm": sigma_ref - mean + delta_ref if sigma_ref is not None else None,
-            })
+                "anisotropy_ppm": sum(anisotropy[i] for i in atoms) / len(atoms),
+            }
+            if all(i in efg for i in atoms):
+                signal.update({key: sum(efg[i][key] for i in atoms) / len(atoms)
+                               for key in ("efg_cq_mhz", "efg_eta", "efg_vzz_au")})
+            signals.append(signal)
         signals.sort(key=lambda s: s["shielding_ppm"])
         out["signals"][element] = len(signals)
         if detail:
             out["nuclei"][element] = signals
+        if ref is None:
+            continue
         out["reference"][element] = {
             "compound": ref["compound"],
             "status": ref["status"],
@@ -210,6 +221,19 @@ def molecule_nmr(
                 if ref["fingerprint"] is not None and fingerprint is not None else None
             ),
         }
+    return out
+
+
+def _weighted_efg(per_conformer: list[list[Efg]], weights: list[float]) -> dict[int, dict]:
+    """Per atom, the weighted EFG; only atoms every conformer has one for."""
+    atoms = set.intersection(*({e.index for e in found} for found in per_conformer)) if per_conformer else set()
+    out = {i: {"efg_cq_mhz": 0.0, "efg_eta": 0.0, "efg_vzz_au": 0.0} for i in atoms}
+    for found, weight in zip(per_conformer, weights):
+        for e in found:
+            if e.index in out:
+                out[e.index]["efg_cq_mhz"] += weight * e.cq_mhz
+                out[e.index]["efg_eta"] += weight * e.eta
+                out[e.index]["efg_vzz_au"] += weight * e.vzz_au
     return out
 
 
@@ -265,7 +289,7 @@ def _reference_state(session, extractor, molecule, state) -> dict:
         return {"status": "pending", "molecule_id": molecule.id}
     if task.status == TaskStatus.failed:
         return {"status": "failed", "molecule_id": molecule.id}
-    shieldings, fingerprint = _nmr_result(session, extractor, task.id)
+    shieldings, fingerprint, _ = _nmr_result(session, extractor, task.id)
     return {"status": "ok" if shieldings else "failed", "molecule_id": molecule.id,
             "shieldings": shieldings, "fingerprint": fingerprint}
 
@@ -288,23 +312,25 @@ def _status(session, extractor, conformer: Conformer, results: dict) -> str:
         return "failed"
     from autodft.analysis.state_analysis import parse_xyz
 
-    shieldings, fingerprint = _nmr_result(session, extractor, task.id)
+    shieldings, fingerprint, efg = _nmr_result(session, extractor, task.id)
     if not shieldings:
         return "unavailable"
     # Shieldings for other atoms than the optimised geometry's are unusable.
     elements, _ = parse_xyz(_geometry(session, conformer.opt.id))
     if [s.element for s in shieldings] != elements:
         return "unavailable"
-    results[conformer.opt.id] = (shieldings, fingerprint)
+    results[conformer.opt.id] = (shieldings, fingerprint, efg)
     return "ok"
 
 
-def _nmr_result(session, extractor, task_id) -> tuple[list[Shielding], Optional[tuple[frozenset[str], str]]]:
+def _nmr_result(
+    session, extractor, task_id,
+) -> tuple[list[Shielding], Optional[tuple[frozenset[str], str]], list[Efg]]:
     task = session.get(ComputationTask, task_id)
     record = stored.for_task(session, task) if task is not None else None
     if record is None:
-        return [], None
-    return stored.shieldings(record), stored.fingerprint(record)
+        return [], None, []
+    return stored.shieldings(record), stored.fingerprint(record), stored.efg(record)
 
 
 def _geometry(session: Session, opt_task_id: int) -> str:

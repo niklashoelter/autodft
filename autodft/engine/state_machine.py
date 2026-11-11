@@ -1523,7 +1523,12 @@ def _render_job(
         except HeaderConflict as exc:
             raise JobInputError(str(exc)) from exc
 
-    input_text = qm_engine.render_input(header_text, charge, multiplicity)
+    trailer = ""
+    if task.task_type == TaskType.singlepoint_nmr:
+        from autodft.qm.orca.blocks import nmr_trailer
+
+        trailer = nmr_trailer(metadata)
+    input_text = qm_engine.render_input(header_text, charge, multiplicity, trailer)
 
     # --- Gap 3 fix: Parse resources from header, fall back to config ---
     nprocs, mem_per_core = _parse_resources_from_header(header_text)

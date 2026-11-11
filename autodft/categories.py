@@ -116,7 +116,8 @@ ESD_HT_SCOPES = ("all", "s1")
 # "sp": HT jobs at the singlepoint level; "opt": at the optimisation level.
 ESD_HT_METHODS = ("sp", "opt")
 UVVIS_NROOTS_MAX = 100
-NMR_NUCLEI = ("H", "C", "F")
+# As has no reference compound: its shielding and EFG tensor are reported raw.
+NMR_NUCLEI = ("H", "C", "F", "As")
 NMR_DH_NPROCS_MAX = 64
 NMR_DH_MAXCORE_RANGE = (1000, 16000)
 # A job must fit the smallest CPU node (~470 GB).

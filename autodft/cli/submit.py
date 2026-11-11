@@ -233,6 +233,7 @@ def _build_request_metadata(
     category_flags: Optional[dict] = None,
     imag_freq_tolerance: float = 0.0,
     advanced: Optional[dict] = None,
+    seed_from_s0: bool = False,
 ) -> str:
     """Build the request_metadata JSON string."""
     metadata = {
@@ -253,6 +254,9 @@ def _build_request_metadata(
         "max_conformers_red": max_conformers_red,
         "imag_freq_tolerance": imag_freq_tolerance,
     }
+
+    if seed_from_s0:
+        metadata["seed_from_s0"] = True
 
     from autodft import categories
 
@@ -278,6 +282,10 @@ def submit(
     skip_confsearch: bool = typer.Option(
         False, "--skip-confsearch",
         help="Skip conformer search; use RDKit geometry directly for optimization",
+    ),
+    seed_from_s0: bool = typer.Option(
+        False, "--seed-from-s0",
+        help="T1/ox/red start from S0's lowest conformer once S0 is finished, without their own conformer search",
     ),
     no_vert_ex: bool = typer.Option(
         False, "--no-vert-ex",
@@ -311,7 +319,7 @@ def submit(
     uvvis_nroots: int = typer.Option(20, "--uvvis-nroots", help="UV/Vis excited states (1-100)"),
     uvvis_tda: bool = typer.Option(False, "--uvvis-tda", help="Tamm-Dancoff approximation for UV/Vis"),
     nmr_nuclei: str = typer.Option(
-        "H,C,F", "--nmr-nuclei", help="NMR nuclei to report, comma-separated"
+        "H,C,F", "--nmr-nuclei", help="NMR nuclei to report, comma-separated (H, C, F, As; As: raw shielding and EFG)"
     ),
     esd_tn_window_ev: float = typer.Option(0.3, "--esd-tn-window", help="Include S1->Tn ISC for Tn up to this many eV above S1"),
     esd_temperature_k: float = typer.Option(298.15, "--esd-temperature", help="Temperature of the ESD rates (K)"),
@@ -403,6 +411,7 @@ def submit(
         category_flags=flags,
         imag_freq_tolerance=imag_freq_tolerance,
         advanced=advanced,
+        seed_from_s0=seed_from_s0,
     )
 
     entry = CalculationEntrypoint(
@@ -441,6 +450,10 @@ def submit_batch(
         False, "--skip-confsearch",
         help="Skip conformer search; use RDKit geometry directly for optimization",
     ),
+    seed_from_s0: bool = typer.Option(
+        False, "--seed-from-s0",
+        help="T1/ox/red start from S0's lowest conformer once S0 is finished, without their own conformer search",
+    ),
     no_vert_ex: bool = typer.Option(
         False, "--no-vert-ex",
         help="Disable singlepoint vertical excitations (ox/red/spin-flip). On by default.",
@@ -473,7 +486,7 @@ def submit_batch(
     uvvis_nroots: int = typer.Option(20, "--uvvis-nroots", help="UV/Vis excited states (1-100)"),
     uvvis_tda: bool = typer.Option(False, "--uvvis-tda", help="Tamm-Dancoff approximation for UV/Vis"),
     nmr_nuclei: str = typer.Option(
-        "H,C,F", "--nmr-nuclei", help="NMR nuclei to report, comma-separated"
+        "H,C,F", "--nmr-nuclei", help="NMR nuclei to report, comma-separated (H, C, F, As; As: raw shielding and EFG)"
     ),
     esd_tn_window_ev: float = typer.Option(0.3, "--esd-tn-window", help="Include S1->Tn ISC for Tn up to this many eV above S1"),
     esd_temperature_k: float = typer.Option(298.15, "--esd-temperature", help="Temperature of the ESD rates (K)"),
@@ -565,6 +578,7 @@ def submit_batch(
         category_flags=flags,
         imag_freq_tolerance=imag_freq_tolerance,
         advanced=advanced,
+        seed_from_s0=seed_from_s0,
     )
 
     smiles_list: list[str] = []

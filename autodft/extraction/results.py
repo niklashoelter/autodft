@@ -25,7 +25,7 @@ from autodft.qm.orca import esd_parser
 from autodft.qm.orca.esd_parser import Rate
 from autodft.qm.orca.parser import IMAGINARY_FREQ_THRESHOLD, IMAGINARY_FREQ_THRESHOLD_S1, OrcaParser
 from autodft.qm.orca.spectra_parser import (
-    IRMode, NaturalCharge, Shielding, Transition, parse_absorption, parse_hirshfeld, parse_ir,
+    Efg, IRMode, NaturalCharge, Shielding, Transition, parse_absorption, parse_efg, parse_hirshfeld, parse_ir,
     parse_natural_charges, parse_polarizability, parse_quadrupole, parse_s2, parse_shieldings,
     parse_stability, parse_wiberg,
 )
@@ -78,6 +78,7 @@ def extract(task_type: str, output: str, input_text: Optional[str] = None, ir: b
         from autodft.analysis.nmr import method_fingerprint
 
         record["shieldings"] = [asdict(s) for s in parse_shieldings(output)]
+        record["efg"] = [asdict(e) for e in parse_efg(output)]
         if input_text is None:
             record["method_fingerprint"] = None
         else:
@@ -435,6 +436,10 @@ def transitions(record: dict) -> list[Transition]:
 
 def shieldings(record: dict) -> list[Shielding]:
     return [Shielding(**s) for s in record.get("shieldings", [])]
+
+
+def efg(record: dict) -> list[Efg]:
+    return [Efg(**e) for e in record.get("efg", [])]
 
 
 def natural_charges(record: dict) -> Optional[list[NaturalCharge]]:

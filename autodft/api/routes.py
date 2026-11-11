@@ -178,6 +178,8 @@ class SubmitRequest(BaseModel):
     request_ox: bool = False
     request_red: bool = False
     skip_confsearch: bool = False
+    # T1, ox and red start from S0's lowest conformer instead of their own conformer search.
+    seed_from_s0: bool = False
     request_optimization: bool = True
     request_singlepoint: bool = True
     # Singlepoint vertical excitations (ox / red / spin-flip). On by
@@ -3057,6 +3059,8 @@ def _new_entrypoint(
         "max_conformers_ox": n_ox,
         "max_conformers_red": n_red,
     }
+    if body.seed_from_s0:
+        request_metadata["seed_from_s0"] = True
     # Only set categories are written, so an unflagged submission's row is
     # exactly what it always was.
     request_metadata.update(categories.snapshot(_category_flags(body)))

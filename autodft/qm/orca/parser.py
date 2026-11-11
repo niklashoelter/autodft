@@ -228,11 +228,11 @@ class OrcaParser(QMEngine):
             conformer_degeneracies=conformer_degeneracies,
         )
 
-    def render_input(self, header: str, charge: int, multiplicity: int) -> str:
+    def render_input(self, header: str, charge: int, multiplicity: int, trailer: str = "") -> str:
         """Delegated to :func:`input_generator.render_orca_input`."""
         from autodft.qm.orca.input_generator import render_orca_input
 
-        return render_orca_input(header, charge, multiplicity)
+        return render_orca_input(header, charge, multiplicity, trailer)
 
     def render_submit_script(
         self,

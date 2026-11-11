@@ -1,4 +1,5 @@
 {{ header_text }}
 
 *xyzfile {{ charge }} {{ multiplicity }} input.xyz
-
+{% if trailer %}
+{{ trailer }}{% endif %}

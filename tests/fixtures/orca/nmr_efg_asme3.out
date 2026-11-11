@@ -1,0 +1,73 @@
+Trimmed from an ORCA 6.1.1 wB97X-D3/def2-SVP CPCM(DMF) NMR job on AsMe3 with %eprnmr Nuclei = all As {fgrad} after the geometry.
+ELECTRIC AND MAGNETIC HYPERFINE STRUCTURE (1 nuclei)
+-----------------------------------------
+
+Number of nuclei to compute A(iso)       :     0
+Number of nuclei to compute A(dip)       :     0
+Number of nuclei to compute A(orb)       :     0
+Number of nuclei to compute A(dia)       :     0
+Number of nuclei to compute EFG          :     1
+Number of nuclei to compute Rho(0)       :     0
+Relativistic treatment                   :  Off
+
+Method             : SCF
+Type of density    : Electron Density
+Multiplicity       :   1
+Irrep              :   0
+Energy             : -2355.2483646855316692 Eh
+Basis              : AO
+ -----------------------------------------------------------
+ Nucleus   1As: A  : Isotope=   75 I=  1.5 P= 91.6668 MHz/au**3 
+                Q  : Isotope=   75 I=  1.5 Q=  0.3140 barn      
+                HFC: iso  = NO dip= NO orb= NO gauge= NO    
+                EFG: fgrad=YES rho= NO                      
+ -----------------------------------------------------------
+
+ Raw EFG matrix (all values in a.u.**-3):
+ ------------------------------------------------------
+              1.7364832       0.0512974       0.6641186
+              0.0512974       1.8050897      -0.3961302
+              0.6641186      -0.3961302      -3.5415729
+
+ V(Tot)       1.8184601       1.8346244      -3.6530845
+ Orientation: 
+     X       -0.9817984       0.1450080       0.1226561
+     Y        0.1367922       0.9879074      -0.0729853
+     Z       -0.1317563      -0.0548785      -0.9897619
+
+ Note: Tensor is right-handed
+
+ Contributions:
+ V(El )       1.6260846       1.6812045  -3.3072892
+ V(Nuc)       0.1923754       0.1534198  -0.3457953
+
+ Quadrupole tensor eigenvalues (in MHz;Q= 0.3140 I=  1.5)
+  e**2qQ            =  -269.520954 MHz 
+  e**2qQ/(4I*(2I-1))=   -22.460080 MHz 
+  eta               =     0.004425
+  NOTE: the diagonal representation of the SH term I*Q*I = e**2qQ/(4I(2I-1))*[-(1-eta),-(1+eta),2]
+
+
+Hyperfine and quadrupole coupling calculation done in   0.2 sec 
+GIAO: Analytic para- and diamagnetic shielding integrals (SHARK)       ... done (  0.4 sec)
+CHEMICAL SHIELDING SUMMARY (ppm)
+--------------------------------
+
+
+  Nucleus  Element    Isotropic     Anisotropy
+  -------  -------  ------------   ------------
+      0       C          187.632         25.478 
+      1       As        1623.364        249.865 
+      2       C          183.468         21.499 
+      3       C          187.460         24.046 
+      4       H           29.550         12.470 
+      5       H           30.330         11.681 
+      6       H           30.161         12.329 
+      7       H           29.190         11.918 
+      8       H           30.196         11.577 
+      9       H           29.647         11.782 
+     10       H           30.298         11.938 
+     11       H           29.605         12.437 
+     12       H           29.707         11.731 
+
+

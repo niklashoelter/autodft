@@ -282,6 +282,7 @@ def test_build_xlsx_has_a_sheet_per_category_plus_sticks_and_esd_jobs():
     assert _header(wb["NMR"]) == [
         "mol_id", "smiles", "state_id", "nucleus", "shift_ppm", "shielding_ppm", "count", "atoms_1based",
         "reference", "reference_delta_ppm", "reference_solvent", "reference_status", "method_matches", "equivalence",
+        "anisotropy_ppm", "efg_cq_MHz", "efg_eta", "efg_vzz_au",
     ]
     assert _header(wb["ESD"]) == [
         "mol_id", "smiles", "state_id", "status", "temperature_K", "HT", "HT_scope", "HT_method", "dEST_eV", "dEST_UKS_eV",

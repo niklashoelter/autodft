@@ -66,7 +66,8 @@ def build_xlsx(payload: dict) -> bytes:
                     nmr.append((m["id"], m["smiles"], m["state_id"], element, s["shift_ppm"], s["shielding_ppm"],
                                 s["count"], ", ".join(str(a + 1) for a in s["atoms"]), ref.get("compound"),
                                 ref.get("delta_ref_ppm"), ref.get("delta_ref_solvent"),
-                                ref.get("status"), ref.get("method_matches"), e.get("equivalence")))
+                                ref.get("status"), ref.get("method_matches"), e.get("equivalence"),
+                                s.get("anisotropy_ppm"), s.get("efg_cq_mhz"), s.get("efg_eta"), s.get("efg_vzz_au")))
         if m.get("esd"):
             e, d = m["esd"], m["esd"].get("derived") or {}
             rates = e.get("rates", {})
@@ -104,7 +105,8 @@ def build_xlsx(payload: dict) -> bytes:
                              "intensity_km_mol"), ir_sticks)
     _sheet(wb, "NMR", ("mol_id", "smiles", "state_id", "nucleus", "shift_ppm", "shielding_ppm", "count",
                        "atoms_1based", "reference", "reference_delta_ppm", "reference_solvent", "reference_status",
-                       "method_matches", "equivalence"), nmr)
+                       "method_matches", "equivalence", "anisotropy_ppm", "efg_cq_MHz", "efg_eta",
+                       "efg_vzz_au"), nmr)
     _sheet(wb, "ESD", ("mol_id", "smiles", "state_id", "status", "temperature_K", "HT", "HT_scope", "HT_method", "dEST_eV",
                        "dEST_UKS_eV", "k_ISC", "k_RISC", "k_IC", "k_F", "k_ISC_T1S0", "k_P", "tau_S1_ns",
                        "phi_F", "phi_ISC", "phi_IC", "tau_T1_us", "phi_P", "phi_ISC_T1S0", "phi_RISC",

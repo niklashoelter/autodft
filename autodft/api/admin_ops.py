@@ -1320,6 +1320,21 @@ def _reopen_esd(session: Session, molecule_id: int, removed: set[int], rate_stat
         session.add(s1)
 
 
+def _reopen_s0_seeds(session: Session, molecule_id: int, removed: set[int]) -> None:
+    """Let states seeded from a removed S0* seed again."""
+    for state in session.exec(
+        select(MoleculeState).where(
+            MoleculeState.molecule_id == molecule_id,
+            col(MoleculeState.metadata_json).contains('"s0_seed"'),
+        )
+    ).all():
+        metadata = json.loads(state.metadata_json)
+        if metadata["s0_seed"].get("task") in removed:
+            metadata.pop("s0_seed")
+            state.metadata_json = json.dumps(metadata)
+            session.add(state)
+
+
 def _under(path: Path, root: Path) -> bool:
     """Whether *path* lies strictly inside *root*."""
     path, root = path.resolve(), root.resolve()
@@ -1357,6 +1372,7 @@ def rerun_task(session: Session, task: ComputationTask, comp_root: Path) -> dict
             session, state.molecule_id, set(task_ids),
             {t.state_id for t in dependents if t.task_type.value.startswith("esd_")},
         )
+        _reopen_s0_seeds(session, state.molecule_id, set(task_ids))
 
     task.status = TaskStatus.created
     task.output_geometry_id = None

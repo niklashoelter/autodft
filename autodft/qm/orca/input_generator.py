@@ -35,12 +35,13 @@ def _get_jinja_env() -> Environment:
 # ------------------------------------------------------------------
 
 
-def render_orca_input(header_text: str, charge: int, multiplicity: int) -> str:
-    """The text of ``input.inp``."""
+def render_orca_input(header_text: str, charge: int, multiplicity: int, trailer: str = "") -> str:
+    """The text of ``input.inp``; *trailer* follows the geometry."""
     return _get_jinja_env().get_template("orca_input.inp.j2").render(
         header_text=header_text.rstrip(),
         charge=charge,
         multiplicity=multiplicity,
+        trailer=trailer,
     )
 
 

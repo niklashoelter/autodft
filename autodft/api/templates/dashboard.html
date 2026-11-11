@@ -1263,6 +1263,10 @@
                             <input type="checkbox" id="skipConfsearch" name="skip_confsearch">
                             <label for="skipConfsearch">Skip Conformer Search</label>
                         </div>
+                        <div class="checkbox-group" title="T1, Ox and Red get no conformer search of their own: once every S0 conformer is finished, each starts from the lowest S0 conformer's geometry.">
+                            <input type="checkbox" id="seedFromS0" name="seed_from_s0">
+                            <label for="seedFromS0">Other states from S0</label>
+                        </div>
                         <div class="checkbox-group">
                             <input type="checkbox" id="requestT1" name="request_t1">
                             <label for="requestT1">Request T1</label>
@@ -1359,6 +1363,7 @@
                                 <div class="checkbox-group"><input type="checkbox" id="nmrNucH" checked><label for="nmrNucH">¹H</label></div>
                                 <div class="checkbox-group"><input type="checkbox" id="nmrNucC" checked><label for="nmrNucC">¹³C</label></div>
                                 <div class="checkbox-group"><input type="checkbox" id="nmrNucF" checked><label for="nmrNucF">¹⁹F</label></div>
+                                <div class="checkbox-group" title="No reference: the As shielding tensor and its electric field gradient (quadrupole coupling C_Q, asymmetry η), as descriptors."><input type="checkbox" id="nmrNucAs"><label for="nmrNucAs">⁷⁵As (σ, EFG)</label></div>
                                 <div class="form-group" style="min-width: 220px;">
                                     <label for="nmrMethod">NMR method</label>
                                     <select id="nmrMethod" style="max-width: 400px;">
@@ -3262,12 +3267,13 @@
         (function () {
             var inputs = document.querySelectorAll('.conf-input[data-requires]');
             function refresh() {
+                var seeded = document.getElementById('seedFromS0').checked;
                 inputs.forEach(function (el) {
                     var cb = document.getElementById(el.dataset.requires);
-                    el.style.display = (cb && cb.checked) ? '' : 'none';
+                    el.style.display = (cb && cb.checked && !seeded) ? '' : 'none';
                 });
             }
-            ['requestT1', 'requestOx', 'requestRed'].forEach(function (id) {
+            ['requestT1', 'requestOx', 'requestRed', 'seedFromS0'].forEach(function (id) {
                 document.getElementById(id).addEventListener('change', refresh);
             });
             refresh();
@@ -3916,7 +3922,7 @@
                 setField('uvvisNroots', options.uvvis_nroots, true);
                 setField('uvvisTda', options.uvvis_tda, true);
             } else if (key === 'request_spec_nmr') {
-                ['H', 'C', 'F'].forEach(function (n) {
+                ['H', 'C', 'F', 'As'].forEach(function (n) {
                     setField('nmrNuc' + n, (options.nmr_nuclei || []).indexOf(n) !== -1, true);
                 });
                 setField('nmrMethod', options.nmr_method, true);
@@ -4162,12 +4168,13 @@
             };
             // Options travel only with their category; a stale value from an
             // unticked panel must not reach the API.
+            if (document.getElementById('seedFromS0').checked) commonBody.seed_from_s0 = true;
             if (commonBody.request_spec_uvvis) {
                 commonBody.uvvis_nroots = intOrDefault('uvvisNroots', 20);
                 commonBody.uvvis_tda = document.getElementById('uvvisTda').checked;
             }
             if (commonBody.request_spec_nmr) {
-                commonBody.nmr_nuclei = ['H', 'C', 'F'].filter(function (n) {
+                commonBody.nmr_nuclei = ['H', 'C', 'F', 'As'].filter(function (n) {
                     return document.getElementById('nmrNuc' + n).checked;
                 });
                 commonBody.nmr_method = document.getElementById('nmrMethod').value;
@@ -5690,16 +5697,31 @@
             return bits.join(', ');
         }
 
-        var NMR_LABELS = { H: '¹H', C: '¹³C', F: '¹⁹F' };
+        var NMR_LABELS = { H: '¹H', C: '¹³C', F: '¹⁹F', As: '⁷⁵As' };
 
         var NMR_REFERENCE_NAMES = { 'C[Si](C)(C)C': 'TMS', 'ClC(Cl)Cl': 'CHCl₃', 'FC(Cl)(Cl)Cl': 'CFCl₃' };
         function ppNmr(nmr) {
             var parts = [];
-            ['H', 'C', 'F'].forEach(function (el) {
+            ['H', 'C', 'F', 'As'].forEach(function (el) {
                 var signals = (nmr.nuclei || {})[el];
                 if (!signals || !signals.length) return;
                 var ref = (nmr.reference || {})[el] || {};
                 var head = NMR_LABELS[el] + ' NMR · ';
+                if (el === 'As') {
+                    head += 'no reference — shielding σ, anisotropy Δσ and quadrupole coupling C<sub>Q</sub>';
+                    var asRows = signals.map(function (s) {
+                        var cq = s.efg_cq_mhz != null ? s.efg_cq_mhz.toFixed(1) : '—';
+                        var eta = s.efg_eta != null ? s.efg_eta.toFixed(3) : '—';
+                        return '<tr><td class="num">' + escHtml(s.shielding_ppm.toFixed(1)) + '</td><td class="num">' +
+                               escHtml(s.anisotropy_ppm != null ? s.anisotropy_ppm.toFixed(1) : '—') + '</td><td class="num">' +
+                               escHtml(cq) + '</td><td class="num">' + escHtml(eta) + '</td><td>' +
+                               escHtml(s.atoms.map(function (a) { return a + 1; }).join(', ')) + '</td></tr>';
+                    }).join('');
+                    parts.push('<div class="pp-plot"><div class="pp-plot-title">' + head + ' · ' + escHtml(ppCounts(nmr)) +
+                               '</div><table class="pp-nmr"><thead><tr><th>σ (ppm)</th><th>Δσ (ppm)</th><th>C<sub>Q</sub> (MHz)</th>' +
+                               '<th>η</th><th>Atoms</th></tr></thead><tbody>' + asRows + '</tbody></table></div>');
+                    return;
+                }
                 if (ref.status === 'ok') {
                     head += 'δ vs ' + escHtml(NMR_REFERENCE_NAMES[ref.compound] || ref.compound) +
                             (ref.delta_ref_ppm ? ' (δ ' + ref.delta_ref_ppm.toFixed(2) + ' ppm, ' + escHtml(ref.delta_ref_solvent || '') + ')' : '') +

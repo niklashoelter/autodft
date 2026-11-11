@@ -497,6 +497,8 @@ Every submission path (CLI, REST, Python) ends up writing the same
 * `request_t1 / request_ox / request_red` — extra states beyond S0.
 * `skip_confsearch` — skip GOAT, use RDKit's initial geometry for
   optimization directly.
+* `seed_from_s0` — T1 / ox / red run no conformer search of their own; once
+  every S0 conformer is finished, each optimises from the lowest S0 conformer.
 * `request_singlepoint_vertical_excitations` (default **true**) —
   vert-ox / vert-red / spin-flip singlepoints on each optimised state.
 * `max_conformers_S0 / _T1 / _ox / _red` — per-state conformer cap

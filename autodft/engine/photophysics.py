@@ -90,32 +90,14 @@ def _seed(
     s0: MoleculeState, s1: MoleculeState, t1: MoleculeState,
 ) -> None:
     """Start S1, T1 and the S0* SOC singlepoint once every S0 conformer is finished."""
-    work = session.exec(
-        select(ComputationTask).where(
-            ComputationTask.state_id == s0.id,
-            col(ComputationTask.task_type).in_(_S0_STAGES),
-        )
-    ).all()
-    if not work or any(
-        t.status in _OPEN or (t.status == TaskStatus.successful and t.has_followups)
-        for t in work
-    ):
+    if not s0_finished(session, s0):
         return
-
-    extractor = PipelineExtractor(molecule.project_name)
-    conformers = extractor.extract_state_results(session, molecule, s0)
-    broken = results.connectivity_by_task(session, [c.opt_task_id for c in conformers])
-    intact = [c for c in conformers if not connectivity.breaks(broken.get(c.opt_task_id))]
-    pick = extractor._pick_reported_conformer(intact)
-    opt = session.get(ComputationTask, pick.opt_task_id) \
-        if pick is not None and pick.e_singlepoint is not None else None
-    geometry = session.get(MoleculeGeometry, opt.output_geometry_id) \
-        if opt is not None and opt.output_geometry_id is not None else None
+    opt, geometry, error = s0_star(session, molecule, s0)
     if geometry is None:
-        _mark(session, s1, esd_seed={"error": _no_seed(s0, conformers, intact)})
+        _mark(session, s1, esd_seed={"error": error})
         logger.warning("Molecule %d: no S0 conformer to seed ESD from", molecule.id)
         return
-    folder = extractor.successful_job_path(session, opt.id)
+    folder = PipelineExtractor(molecule.project_name).successful_job_path(session, opt.id)
     if folder is None or not (folder / "input.hess").exists():
         # Every rate job copies it: stop here, not after days of S1 and T1 work.
         _mark(session, s1, esd_seed={
@@ -145,8 +127,40 @@ def _seed(
     logger.info("Molecule %d: ESD seeded from S0 optimisation %d", molecule.id, opt.id)
 
 
+def s0_finished(session: Session, s0: MoleculeState) -> bool:
+    """Whether *s0*'s conformer search, optimisations and energy singlepoints are all finished."""
+    work = session.exec(
+        select(ComputationTask).where(
+            ComputationTask.state_id == s0.id,
+            col(ComputationTask.task_type).in_(_S0_STAGES),
+        )
+    ).all()
+    return bool(work) and not any(
+        t.status in _OPEN or (t.status == TaskStatus.successful and t.has_followups)
+        for t in work
+    )
+
+
+def s0_star(
+    session: Session, molecule: Molecule, s0: MoleculeState,
+) -> tuple[Optional[ComputationTask], Optional[MoleculeGeometry], Optional[str]]:
+    """S0's lowest intact conformer (S0*): its optimisation and geometry, or why there is none."""
+    extractor = PipelineExtractor(molecule.project_name)
+    conformers = extractor.extract_state_results(session, molecule, s0)
+    broken = results.connectivity_by_task(session, [c.opt_task_id for c in conformers])
+    intact = [c for c in conformers if not connectivity.breaks(broken.get(c.opt_task_id))]
+    pick = extractor._pick_reported_conformer(intact)
+    opt = session.get(ComputationTask, pick.opt_task_id) \
+        if pick is not None and pick.e_singlepoint is not None else None
+    geometry = session.get(MoleculeGeometry, opt.output_geometry_id) \
+        if opt is not None and opt.output_geometry_id is not None else None
+    if geometry is None:
+        return None, None, _no_seed(s0, conformers, intact)
+    return opt, geometry, None
+
+
 def _no_seed(s0: MoleculeState, conformers: list, intact: list) -> str:
-    """Why no S0 conformer can seed ESD."""
+    """Why no S0 conformer can seed another state."""
     if conformers and not intact:
         return "Every S0 conformer's optimised geometry lost bonds of the molecule."
     finished = [c for c in intact if c.e_singlepoint is not None]

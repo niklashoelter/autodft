@@ -60,13 +60,14 @@ class QMEngine(ABC):
         ...
 
     @abstractmethod
-    def render_input(self, header: str, charge: int, multiplicity: int) -> str:
+    def render_input(self, header: str, charge: int, multiplicity: int, trailer: str = "") -> str:
         """The program-specific input file's text; the geometry is read from ``input.xyz``.
 
         Args:
             header: Engine-specific header / route section.
             charge: Molecular charge.
             multiplicity: Spin multiplicity.
+            trailer: Input that must follow the geometry.
         """
         ...
 

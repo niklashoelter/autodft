@@ -15,6 +15,7 @@ from autodft.config import Settings
 from autodft.db import get_session
 from autodft.engine.entrypoint_processor import process_next_entrypoint
 from autodft.engine.photophysics import advance_photophysics
+from autodft.engine.s0_seed import advance_s0_seeds
 from autodft.engine.scheduler import Scheduler
 from autodft.engine.state_machine import (
     create_retry_jobs,
@@ -119,6 +120,9 @@ class PipelineWorker:
 
             self._run_step(session, "4b: advance photophysics",
                            lambda: advance_photophysics(session, self.settings))
+
+            self._run_step(session, "4c: seed states from S0",
+                           lambda: advance_s0_seeds(session))
 
             # An owner whose campaign is failing systematically gets no new
             # jobs and no expansion. Their submitted work keeps running; other
